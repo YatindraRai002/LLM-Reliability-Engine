@@ -1,0 +1,113 @@
+import asyncio
+import numpy as np
+import torch
+import yaml
+import logging
+from sklearn.cluster import AgglomerativeClustering
+from models.model_loader import get_open_model, get_embedding_model, CONFIG
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Removed the global gpu_lock = asyncio.Lock() from here
+
+async def generate_n_samples_batch(
+    prompt: str,
+    n: int = None,
+    temperature: float = None
+) -> list[str]:
+    """
+    Generate N diverse responses using a single batch call to the GPU.
+    Optimized with KV caching and performance settings.
+    """
+    n = n or CONFIG["sampling"].get("n_samples", 3)
+    temp = temperature or CONFIG["sampling"].get("temperature", 0.8)
+    max_tokens = 64
+
+    logger.info(f"Generating {n} samples with temperature {temp} in a single batch...")
+
+    lock = asyncio.Lock()
+    async with lock:
+        try:
+            tokenizer, model = get_open_model()
+
+            formatted = f"[INST] {prompt} [/INST]"
+            inputs = tokenizer([formatted] * n, return_tensors="pt", padding=True).to(model.device)
+            input_length = inputs["input_ids"].shape[1]
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    do_sample=True,
+                    temperature=temp,
+                    top_p=0.95,
+                    top_k=50, # Limit search space for speed
+                    use_cache=True, # CRITICAL: Enable KV Caching
+                    pad_token_id=tokenizer.eos_token_id
+                )
+
+            responses = []
+            for i in range(n):
+                generated = outputs[i][input_length:]
+                responses.append(tokenizer.decode(generated, skip_special_tokens=True).strip())
+
+            return responses
+        except Exception as e:
+            logger.error(f"Batch generation error: {e}")
+            return [""] * n
+
+def compute_semantic_uncertainty(responses: list[str]) -> dict:
+    """
+    Compute semantic uncertainty using embedding clustering.
+    """
+    if not responses or all(not r for r in responses):
+        return {"uncertainty_score": 1.0, "n_semantic_clusters": 1, "responses": responses}
+
+    embedder = get_embedding_model()
+
+    embeddings = embedder.encode(responses, convert_to_tensor=True, normalize_embeddings=True)
+    sim_matrix = (embeddings @ embeddings.T).cpu().numpy()
+
+    distance_matrix = 1.0 - sim_matrix
+    np.fill_diagonal(distance_matrix, 0)
+
+    # Fixed: Config no longer has similarity_threshold, use a sensible default (0.7)
+    threshold = 0.7
+
+    clustering = AgglomerativeClustering(
+        n_clusters=None,
+        distance_threshold=1.0 - threshold,
+        metric="precomputed",
+        linkage="average"
+    )
+
+    labels = clustering.fit_predict(distance_matrix)
+    n_clusters = len(set(labels))
+
+    n = len(responses)
+    mask = ~np.eye(n, dtype=bool)
+    mean_similarity = float(sim_matrix[mask].mean()) if n > 1 else 1.0
+    uncertainty_score = float(1.0 - mean_similarity)
+
+    cluster_counts = np.bincount(labels)
+    cluster_probs = cluster_counts / cluster_counts.sum()
+    semantic_entropy = float(-np.sum(cluster_probs * np.log(cluster_probs + 1e-10)))
+
+    max_entropy = np.log(n) if n > 1 else 1.0
+    normalized_entropy = semantic_entropy / max_entropy if max_entropy > 0 else 0.0
+
+    return {
+        "uncertainty_score": uncertainty_score,
+        "normalized_entropy": normalized_entropy,
+        "n_semantic_clusters": n_clusters,
+        "mean_pairwise_similarity": mean_similarity,
+        "cluster_labels": labels.tolist(),
+        "embeddings": embeddings.cpu().numpy().tolist(),
+        "responses": responses
+    }
+
+async def run_semantic_uncertainty_pipeline_async(prompt: str) -> dict:
+    """Async pipeline orchestrator."""
+    responses = await generate_n_samples_batch(prompt)
+    return compute_semantic_uncertainty(responses)

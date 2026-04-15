@@ -1,0 +1,26 @@
+# Secrets
+.env
+
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Eval artifacts
+eval_results.json
+
+# Test / cache
+.pytest_cache/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp

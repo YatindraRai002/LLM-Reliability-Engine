@@ -1,0 +1,41 @@
+# config.yaml
+
+models:
+  local:
+    name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    use_4bit: true
+    torch_dtype: "float16"
+  groq:
+    name: "llama-3.3-70b-versatile"
+  nli:
+    name: "cross-encoder/nli-deberta-v3-base"
+  embedding:
+    name: "sentence-transformers/all-MiniLM-L6-v2"
+
+detection:
+  weights:
+    calibration: 0.25
+    semantic_uncertainty: 0.30
+    cross_check: 0.45
+  thresholds:
+    low: 0.25
+    medium: 0.6
+
+sampling:
+  n_samples: 2
+  temperature: 0.8
+
+credentials:
+  usernames:
+    admin:
+      email: admin@example.com
+      name: Admin User
+      # Hashes generated using stauth.Hasher(['admin_password']).generate()
+      password: $2b$12$q7O0g8j3Z/xZzO4Z8x4Bie/H2j2m/V5Z/2Y4P1O2W3F4Y5Z6A7B8C
+cookie:
+  expiry_days: 1
+  key: random_signature_key
+  name: dashboard_session
+preauthorized:
+  emails:
+  - admin@example.com
