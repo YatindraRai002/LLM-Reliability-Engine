@@ -1,332 +1,264 @@
+"""
+core/aggregator.py
+Weighted score fusion. When Groq is unavailable, switches to
+2-signal mode (calibration + uncertainty only) instead of
+giving a misleading cross-check score.
+"""
+
+import logging
+import os
+import time
+from dataclasses import dataclass, asdict
+from typing import Optional
+
 import numpy as np
 import yaml
-import os
-import asyncio
-import torch
-import logging
-from dataclasses import dataclass
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(CURRENT_DIR, "..", "config.yaml")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(_ROOT, "config.yaml")) as f:
+    CONFIG = yaml.safe_load(f)
 
-def load_config():
-    try:
-        with open(CONFIG_PATH) as f:
-            return yaml.safe_load(f)
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        return {}
-
-CONFIG = load_config()
-
-from core.calibration import PlattCalibrator
-calibrator_path = os.path.join(CURRENT_DIR, "..", "calibrator.pkl")
-calibrator = PlattCalibrator()
-if os.path.exists(calibrator_path):
-    calibrator.load(calibrator_path)
-else:
-    logger.warning(f"Calibrator not found at {calibrator_path}, will use raw scores.")
 
 @dataclass
 class HallucinationResult:
-    score: float
-    label: str
-    calibration_score: float
-    uncertainty_score: float
-    cross_check_score: float
-    weights_used: dict
-    explanation: str
+    score:              float
+    label:              str
+    explanation:        str
+    calibration_score:  float
+    uncertainty_score:  float
+    cross_check_score:  float
+    weights_used:       dict
+    thresholds_used:    dict
+    n_samples_used:     int
+    groq_available:     bool    # NEW — tells UI whether cross-check ran
+    mode:               str     # "full" or "2-signal"
 
     def to_dict(self) -> dict:
-        return {
-            "score": self.score,
-            "label": self.label,
-            "calibration_score": self.calibration_score,
-            "uncertainty_score": self.uncertainty_score,
-            "cross_check_score": self.cross_check_score,
-            "weights_used": self.weights_used,
-            "explanation": self.explanation,
-        }
+        return asdict(self)
+
 
 def aggregate_scores(
-    calibration_score: float,
-    uncertainty_score: float,
-    cross_check_score: float,
-    verdict: str = "neutral",
-    weights: dict = None
+    calibration_score:  float,
+    uncertainty_score:  float,
+    cross_check_result: dict,           # full cc dict, not just a float
+    weights:            Optional[dict] = None,
+    n_samples:          int = None,
 ) -> HallucinationResult:
-
-    def sanitize(val):
-        try:
-            return float(np.clip(val, 0.0, 1.0))
-        except (TypeError, ValueError):
-            return 0.5
-
-    c_score = sanitize(calibration_score)
-    u_score = sanitize(uncertainty_score)
-    x_score = sanitize(cross_check_score)
-
-    w = weights or CONFIG.get("detection", {}).get("weights", {"calibration": 0.25, "semantic_uncertainty": 0.3, "cross_check": 0.45})
+    """
+    Fuse signals into final risk score.
+    
+    When groq_available=False in cross_check_result:
+      - Redistributes cross-check weight to cal + uncertainty
+      - Does NOT apply hard NLI override
+      - Sets mode="2-signal" for UI display
+    """
+    cal = float(np.clip(calibration_score,  0.0, 1.0))
+    unc = float(np.clip(uncertainty_score,  0.0, 1.0))
+    
+    groq_available = cross_check_result.get("groq_available", True)
+    cc_raw         = cross_check_result.get("cross_check_uncertainty", 0.5)
+    verdict        = cross_check_result.get("verdict", "neutral")
+    cc             = float(np.clip(cc_raw, 0.0, 1.0))
+    
+    # Load base weights (using detection/weights from our config.yaml)
+    w = dict(weights or CONFIG["detection"]["weights"])
     w1 = w.get("calibration", 0.25)
-    w2 = w.get("semantic_uncertainty", 0.3)
-    w3 = w.get("cross_check", 0.45)
-
-    total_w = w1 + w2 + w3
-    w1, w2, w3 = w1/total_w, w2/total_w, w3/total_w
-
-    # Risk-Averse Fusion: Combine weighted average with max-signal penalty
-    base_avg = (w1 * c_score) + (w2 * u_score) + (w3 * x_score)
-    max_signal = max(c_score, u_score, x_score)
-    final_score = max(base_avg, max_signal * 0.7)
-
-    # NLI Hard-Override: High risk if contradiction is found
-    if verdict == "contradict":
-        final_score = max(final_score, 0.85)
-
-    final_score = float(np.clip(final_score, 0.0, 1.0))
-
-    # Apply Platt Calibration
-    if calibrator is not None:
-        final_score = calibrator.transform(final_score)
-        final_score = float(np.clip(final_score, 0.0, 1.0))
-
-    thresholds = CONFIG.get("detection", {}).get("thresholds", {"low": 0.25, "medium": 0.6})
-
-    if final_score < thresholds.get("low", 0.25):
+    w2 = w.get("semantic_uncertainty",  0.30)
+    w3 = w.get("cross_check",  0.45)
+    
+    mode = "full"
+    
+    if not groq_available:
+        # 2-signal mode: redistribute cross-check weight
+        # Split it 40/60 to uncertainty/calibration (uncertainty is more reliable)
+        w1 = w1 + w3 * 0.40
+        w2 = w2 + w3 * 0.60
+        w3 = 0.0
+        cc = 0.5   # neutral
+        mode = "2-signal"
+        logger.info("Aggregator: running in 2-signal mode (Groq unavailable)")
+    
+    # Normalize weights
+    total = w1 + w2 + w3
+    if total > 0:
+        w1, w2, w3 = w1/total, w2/total, w3/total
+    
+    # Base weighted score
+    score = w1 * cal + w2 * unc + w3 * cc
+    
+    # Hard NLI override — ONLY when Groq actually ran AND returned contradiction
+    # NEVER fire this when Groq failed — that was the source of false 1.0 scores
+    if groq_available and verdict == "contradict":
+        pre_override = score
+        score = max(score, 0.85)
+        logger.info(
+            f"Hard NLI override fired: {pre_override:.3f} → {score:.3f} "
+            f"(verdict=contradict, agreement={cross_check_result.get('symmetric_agreement',0):.3f})"
+        )
+    
+    score = float(np.clip(score, 0.0, 1.0))
+    
+    # Risk label (using detection/thresholds from config.yaml)
+    thr = CONFIG["detection"]["thresholds"]
+    if score < thr["low"]:
         label = "low"
-        explanation = "Model shows consistent, confident responses across all signals."
-    elif final_score < thresholds.get("medium", 0.6):
+    elif score < thr["medium"]:
         label = "medium"
-        dominant = max([("calibration", c_score), ("uncertainty", u_score), ("cross-check", x_score)], key=lambda x: x[1])
-        explanation = f"Moderate hallucination risk. Primary signal: {dominant[0]} ({dominant[1]:.2f})"
     else:
         label = "high"
-        signals = []
-        if c_score > 0.6: signals.append(f"low token confidence ({c_score:.2f})")
-        if u_score > 0.6: signals.append(f"high response variance ({u_score:.2f})")
-        if x_score > 0.6: signals.append(f"model disagreement ({x_score:.2f})")
-        if verdict == "contradict": signals.insert(0, "NLI contradiction detected")
-
-        if x_score > 0.8:
-            explanation = f"Critical hallucination detected: Severe disagreement between models. {', '.join(signals)}"
-        else:
-            explanation = f"Likely hallucination. Triggered by: {', '.join(signals) or 'all signals'}."
-
+    
+    n_s = n_samples or CONFIG["sampling"]["n_samples"]
+    
     return HallucinationResult(
-        score=round(final_score, 3),
-        label=label,
-        calibration_score=c_score,
-        uncertainty_score=u_score,
-        cross_check_score=x_score,
-        weights_used={"w1": w1, "w2": w2, "w3": w3},
-        explanation=explanation
+        score             = round(score, 3),
+        label             = label,
+        explanation       = _explain(label, cal, unc, cc, n_s, groq_available, verdict),
+        calibration_score = round(cal, 3),
+        uncertainty_score = round(unc, 3),
+        cross_check_score = round(cc,  3),
+        weights_used      = {
+            "calibration": round(w1, 3),
+            "uncertainty":  round(w2, 3),
+            "cross_check":  round(w3, 3),
+        },
+        thresholds_used   = thr,
+        n_samples_used    = n_s,
+        groq_available    = groq_available,
+        mode              = mode,
     )
 
-def detect_model_collapse(text: str) -> bool:
-    """Detects if the model has entered a repetition loop or produced gibberish."""
-    if not text or len(text) < 10:
-        return False
 
-    # Check for repetitive phrases (3 or more times)
-    words = text.split()
-    if len(words) < 5:
-        return False
-
-    for n in range(2, 5): # Check n-grams from 2 to 4 words
-        ngrams = [tuple(words[i:i+n]) for i in range(len(words)-n+1)]
-        counts = {}
-        for ng in ngrams:
-            counts[ng] = counts.get(ng, 0) + 1
-            if counts[ng] >= 3:
-                return True
-    return False
-
-async def run_correction_loop_async(prompt: str, draft_response: str) -> dict:
-    """Self-correction loop using adversarial prompting."""
-    from models.model_loader import get_open_model
-
-    # Create a local lock for this specific pipeline run since global locks
-    # cause "different event loop" errors in Streamlit.
-    gpu_lock = asyncio.Lock()
-
-    tokenizer, model = get_open_model()
-
-    # Adversarial Critique phase
-    critique_prompt = (
-        f"<|system|>\nYou are a critical fact-checker. Your goal is to determine if the Draft Answer is factually correct.\n\n"
-        f"Approach:\n1. Extract the primary claims from the Draft Answer.\n2. Evaluate each claim independently.\n"
-        f"3. If a claim is unsupported or incorrect, provide a specific counter-fact.\n4. If the answer is correct, state 'The answer is accurate'.\n</s>\n"
-        f"<|user|>\nQuestion: {prompt}\nDraft Answer: {draft_response}</s>\n<|assistant|>\n"
+def _explain(label, cal, unc, cc, n, groq_available, verdict) -> str:
+    mode_note = "" if groq_available else " (Groq unavailable — 2-signal mode)"
+    
+    if label == "low":
+        return (
+            f"Response appears reliable{mode_note}. "
+            f"Token confidence is {'high' if cal<0.3 else 'moderate'}, "
+            f"responses are {'consistent' if unc<0.3 else 'somewhat varied'} across {n} samples."
+        )
+    if label == "medium":
+        dominant = max(
+            [("calibration", cal), ("uncertainty", unc), ("cross-check", cc)],
+            key=lambda x: x[1]
+        )
+        return (
+            f"Moderate hallucination risk{mode_note}. "
+            f"Strongest signal: {dominant[0]} ({dominant[1]:.2f}). "
+            "Verify key claims independently."
+        )
+    # high
+    triggers = []
+    if cal > 0.55:  triggers.append(f"low token confidence ({cal:.2f})")
+    if unc > 0.55:  triggers.append(f"high response variance ({unc:.2f})")
+    if cc  > 0.55 and groq_available:
+        triggers.append(f"model disagreement ({cc:.2f})")
+    if groq_available and verdict == "contradict":
+        triggers.append("NLI contradiction override")
+    
+    trigger_str = "; ".join(triggers) or "multiple signals"
+    return (
+        f"High hallucination risk{mode_note}. "
+        f"Triggered by: {trigger_str}. "
+        "Do not rely on this response without verification."
     )
 
-    async with gpu_lock:
-        inputs = tokenizer(critique_prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            critique_ids = model.generate(
-                **inputs,
-                max_new_tokens=128,
-                do_sample=False,
-                use_cache=True, # Enable KV Cache
-                top_k=50,
-                pad_token_id=tokenizer.eos_token_id if tokenizer.pad_token_id is None else tokenizer.pad_token_id
-            )[0][inputs["input_ids"].shape[1]:]
-        critique_text = tokenizer.decode(critique_ids, skip_special_tokens=True)
 
-    # Synthesis phase
-    final_prompt = (
-        f"<|system|>\nYou are a synthesis expert. Compare the original draft and the critique to produce the most accurate response. "
-        f"If the critique identified a factual error, correct it. If the critique is vague, prioritize the most factual information. "
-        f"If you are unsure, state that you do not know.\n</s>\n"
-        f"<|user|>\nQuestion: {prompt}\nDraft: {draft_response}\nCritique: {critique_text}</s>\n<|assistant|>\n"
+def run_full_pipeline(
+    prompt: str,
+    use_local_for_uncertainty: bool = False,
+    weights: Optional[dict] = None,
+) -> dict:
+    from core.calibration          import get_generation_with_scores, compute_calibration_score
+    from core.semantic_uncertainty import compute_semantic_uncertainty
+    from core.cross_check          import run_cross_check
+
+    t0 = time.time()
+    timings = {}
+    logger.info(f"=== Pipeline: '{prompt[:60]}' ===")
+
+    # Step 1: Calibration
+    t = time.time()
+    logger.info("Step 1/3: Calibration...")
+    try:
+        cal_detail = get_generation_with_scores(prompt)
+        cal_score  = compute_calibration_score(cal_detail["token_probs"])
+    except Exception as e:
+        logger.error(f"Calibration failed: {e}")
+        from core.calibration import _fallback_result
+        cal_detail = _fallback_result(reason=str(e))
+        cal_score  = 0.5
+    timings["calibration"] = round(time.time()-t, 2)
+    logger.info(f"  cal={cal_score:.3f} ({timings['calibration']}s)")
+
+    # Step 2: Semantic uncertainty
+    t = time.time()
+    logger.info("Step 2/3: Semantic uncertainty...")
+    try:
+        # We need to map run_semantic_uncertainty_pipeline to our existing compute_semantic_uncertainty
+        # since the user code calls run_semantic_uncertainty_pipeline which was async in our version
+        # I will just run the synchronous generation batch from the async method via asyncio.run
+        import asyncio
+        from core.semantic_uncertainty import generate_n_samples_batch
+        responses = asyncio.run(generate_n_samples_batch(prompt))
+        sem_detail = compute_semantic_uncertainty(responses)
+        sem_score = sem_detail["uncertainty_score"]
+    except Exception as e:
+        logger.error(f"Semantic uncertainty failed: {e}")
+        sem_detail = {
+            "uncertainty_score":        0.5,
+            "n_semantic_clusters":      1,
+            "normalized_entropy":       0.5,
+            "responses":                [],
+            "embeddings_2d":            [],
+            "cluster_labels":           [],
+            "mean_pairwise_similarity": 1.0,
+        }
+        sem_score = 0.5
+    timings["semantic_uncertainty"] = round(time.time()-t, 2)
+    logger.info(f"  unc={sem_score:.3f} ({timings['semantic_uncertainty']}s)")
+
+    # Step 3: Cross-check
+    t = time.time()
+    logger.info("Step 3/3: Cross-check...")
+    try:
+        cc_detail = run_cross_check(prompt, cal_detail["response"])
+        cc_score  = cc_detail["cross_check_uncertainty"]
+    except Exception as e:
+        logger.error(f"Cross-check failed: {e}")
+        cc_detail = {
+            "local_response":          cal_detail.get("response",""),
+            "groq_response":           None,
+            "groq_available":          False,
+            "error":                   str(e),
+            "verdict":                 "unavailable",
+            "cross_check_uncertainty": 0.5,
+            "symmetric_agreement":     0.0,
+            "ab_detail": {}, "ba_detail": {},
+        }
+        cc_score = 0.5
+    timings["cross_check"] = round(time.time()-t, 2)
+    logger.info(f"  cc={cc_score:.3f} ({timings['cross_check']}s)")
+
+    # Step 4: Aggregate
+    result = aggregate_scores(
+        cal_score, sem_score, cc_detail,
+        weights=weights,
+        n_samples=len(sem_detail.get("responses", [])),
     )
-
-    async with gpu_lock:
-        inputs = tokenizer(final_prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            final_ids = model.generate(
-                **inputs,
-                max_new_tokens=128,
-                do_sample=False,
-                use_cache=True, # Enable KV Cache
-                top_k=50,
-                pad_token_id=tokenizer.eos_token_id if tokenizer.pad_token_id is None else tokenizer.pad_token_id
-            )[0][inputs["input_ids"].shape[1]:]
-        final_response = tokenizer.decode(final_ids, skip_special_tokens=True)
+    timings["total"] = round(time.time()-t0, 2)
+    logger.info(f"=== Done: {result.score:.3f} ({result.label}) mode={result.mode} ===")
 
     return {
-        "draft": draft_response,
-        "critique": critique_text,
-        "final": final_response
+        "prompt":             prompt,
+        "result":             result,
+        "calibration_detail": cal_detail,
+        "calibration_score":  cal_score,
+        "uncertainty_detail": sem_detail,
+        "uncertainty_score":  sem_score,
+        "cross_check_detail": cc_detail,
+        "cross_check_score":  cc_score,
+        "timings":            timings,
     }
-
-async def async_run_full_pipeline(prompt: str, weights: dict = None) -> dict:
-    from core.semantic_uncertainty import run_semantic_uncertainty_pipeline_async
-    from core.cross_check import run_cross_check_async
-    from core.calibration import compute_calibration_from_batch
-    from core.sanitizer import sanitize_prompt
-    from core.cache import get_cached, set_cached
-
-    safe_prompt = sanitize_prompt(prompt)
-    if not safe_prompt:
-        raise ValueError("Invalid query after sanitization")
-
-    cached = get_cached(safe_prompt, weights)
-    if cached:
-        # If it was loaded from JSON, result is a dict, need to convert back to HallucinationResult
-        # But we can also just let the caller handle dicts, or convert it here.
-        # Streamlit components expect result as HallucinationResult object in current_result["result"].
-        # So we reconstruct it.
-        if isinstance(cached.get("result"), dict):
-            cached["result"] = HallucinationResult(**cached["result"])
-        return cached
-
-    try:
-        # 1. Parallel Signal Gathering
-        sem_task = asyncio.create_task(run_semantic_uncertainty_pipeline_async(safe_prompt))
-
-        sem_result = await sem_task
-        draft_response = sem_result["responses"][0] if sem_result["responses"] else ""
-
-        # Fail-Safe 1: Detect Model Collapse (Repetition/Gibberish)
-        if detect_model_collapse(draft_response):
-            return {
-                "prompt": prompt,
-                "result": aggregate_scores(1.0, 1.0, 1.0, verdict="contradict"), # Force High Risk
-                "calibration_detail": {"response": "Model failure detected", "mean_confidence": 0.0},
-                "uncertainty_detail": sem_result,
-                "cross_check_detail": {"cross_check_uncertainty": 1.0, "verdict": "collapse"},
-                "correction_detail": {"draft": draft_response, "critique": "Catastrophic repetition detected.", "final": "I'm sorry, the model encountered a generation error and cannot provide a factual answer."}
-            }
-
-        cc_result = await run_cross_check_async(safe_prompt, draft_response)
-
-        # 2. Derive Calibration from the batch
-        cal_score = compute_calibration_from_batch(sem_result["responses"])
-
-        # Fail-Safe 2: Calibration Floor
-        if cal_score > 0.9:
-            cal_score = 1.0
-
-        # 3. Aggregate
-        result = aggregate_scores(
-            cal_score,
-            sem_result["uncertainty_score"],
-            cc_result["cross_check_uncertainty"],
-            verdict=cc_result.get("verdict", "neutral"),
-            weights=weights
-        )
-
-        # 4. Conditional Self-Correction Loop (Latency Optimization)
-        # If the risk is low, we skip correction entirely to save GPU time.
-        if result.label == "low":
-            correction_detail = {
-                "draft": draft_response,
-                "critique": "No correction needed. Signal confidence is high.",
-                "final": draft_response
-            }
-        else:
-            correction_detail = await run_correction_loop_async(safe_prompt, draft_response)
-
-        # 5. Generate Explanations
-        try:
-            from core.explainer import generate_explanation
-            explanation_detail = generate_explanation(
-                response=correction_detail["final"],
-                token_probs=sem_result.get("token_probs", []),
-                local_response=draft_response,
-                groq_response=cc_result.get("groq_response", ""),
-                cal=cal_score,
-                unc=sem_result["uncertainty_score"],
-                cc=cc_result["cross_check_uncertainty"],
-                weights=result.weights_used,
-            )
-        except Exception as e:
-            logger.warning(f"Explanation generation failed: {e}")
-            explanation_detail = None
-
-        final_dict = {
-            "prompt": prompt,
-            "result": result,
-            "calibration_detail": {"response": correction_detail["final"], "mean_confidence": cal_score},
-            "uncertainty_detail": sem_result,
-            "cross_check_detail": cc_result,
-            "correction_detail": correction_detail,
-            "explanation_detail": explanation_detail,
-        }
-        
-        # Need to convert HallucinationResult to dict for caching
-        cache_dict = final_dict.copy()
-        cache_dict["result"] = cache_dict["result"].to_dict()
-        set_cached(safe_prompt, weights, cache_dict)
-
-        return final_dict
-    except torch.cuda.OutOfMemoryError:
-        logger.error("GPU OOM occurred during pipeline execution")
-        return {
-            "prompt": prompt,
-            "result": aggregate_scores(1.0, 1.0, 1.0, verdict="error"),
-            "error": "GPU Out of Memory. Please try a shorter prompt.",
-            "calibration_detail": {}, "uncertainty_detail": {}, "cross_check_detail": {}, "correction_detail": {}
-        }
-    except Exception as e:
-        logger.exception(f"Unexpected pipeline error: {e}")
-        return {
-            "prompt": prompt,
-            "result": aggregate_scores(0.5, 0.5, 0.5, verdict="error"),
-            "error": f"Internal Pipeline Error: {str(e)}",
-            "calibration_detail": {}, "uncertainty_detail": {}, "cross_check_detail": {}, "correction_detail": {}
-        }
-
-def run_full_pipeline(prompt: str, weights: dict = None) -> dict:
-    """Synchronous wrapper for Streamlit compatibility."""
-    # We create a new event loop for each request to avoid "different event loop" errors
-    # especially since Streamlit's execution environment can be tricky with asyncio.
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(async_run_full_pipeline(prompt, weights=weights))
-    finally:
-        loop.close()

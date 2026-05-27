@@ -31,7 +31,15 @@ def get_open_model():
     model_name = model_cfg["name"]
     use_4bit = model_cfg.get("use_4bit", False)
 
-    logger.info(f"Loading open model: {model_name} (4bit: {use_4bit})")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cpu":
+        logger.warning("CUDA not found. Disabling 4-bit quantization and using float32 for CPU performance.")
+        use_4bit = False
+        dtype = torch.float32
+    else:
+        dtype = torch.float16 if not use_4bit else None
+
+    logger.info(f"Loading open model: {model_name} (4bit: {use_4bit}, dtype: {dtype})")
     
     bnb_config = None
     if use_4bit:
@@ -47,10 +55,12 @@ def get_open_model():
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.float16 if not use_4bit else None,
+            device_map="auto" if use_4bit else None,
+            torch_dtype=dtype,
             trust_remote_code=True
         )
+        if not use_4bit:
+            model = model.to(device)
         model.eval()
         return tokenizer, model
     except Exception as e:

@@ -11,6 +11,19 @@ logger = logging.getLogger(__name__)
 
 # Removed the global gpu_lock = asyncio.Lock() from here
 
+def _format_prompt(user_msg: str, model_name: str) -> str:
+    """Apply the correct chat template per model."""
+    if "tinyllama" in model_name.lower():
+        return (
+            "<|system|>\nYou are a helpful assistant.</s>\n"
+            f"<|user|>\n{user_msg.strip()}</s>\n"
+            "<|assistant|>\n"
+        )
+    elif "mistral" in model_name.lower():
+        return f"<s>[INST] {user_msg.strip()} [/INST]"
+    else:
+        return user_msg
+
 async def generate_n_samples_batch(
     prompt: str,
     n: int = None,
@@ -30,8 +43,8 @@ async def generate_n_samples_batch(
     async with lock:
         try:
             tokenizer, model = get_open_model()
-
-            formatted = f"[INST] {prompt} [/INST]"
+            model_name = CONFIG["models"]["local"]["name"]
+            formatted = _format_prompt(prompt, model_name)
             inputs = tokenizer([formatted] * n, return_tensors="pt", padding=True).to(model.device)
             input_length = inputs["input_ids"].shape[1]
 

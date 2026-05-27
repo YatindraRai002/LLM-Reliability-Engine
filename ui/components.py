@@ -64,22 +64,59 @@ def render_response_comparison(result_dict: dict):
     # Use 'open_model_response' if available, otherwise fall back to the correction detail draft
     local_response = cc.get("open_model_response") or result_dict.get("correction_detail", {}).get("draft", "Response not available")
 
-    with col_a:
-        st.markdown("**Local Model Response**")
-        # Use highlighted HTML if explanation data is available
-        explanation = result_dict.get("explanation_detail")
-        if explanation and hasattr(explanation, "highlighted_html") and explanation.highlighted_html:
-            st.markdown(explanation.highlighted_html, unsafe_allow_html=True)
-        else:
-            st.write(local_response)
+    _tab_responses(result_dict["cross_check_detail"])
 
-    with col_b:
-        st.markdown("**Groq Response**")
-        st.write(cc.get("groq_response", "Groq response not available"))
-
-    verdict_colors = {"agree": "green", "neutral": "orange", "contradict": "red", "collapse": "red"}
-    v = cc.get("verdict", "neutral")
-    st.markdown(f"**NLI verdict:** :{verdict_colors.get(v, 'gray')}[{v.upper()}]  |  Agreement score: `{cc.get('symmetric_agreement', 0.0):.3f}`")
+def _tab_responses(cc: dict):
+    st.subheader("Response comparison")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Local model** (TinyLlama)")
+        response = cc.get("local_response", "—")
+        st.info(response if response else "No response generated")
+    
+    with c2:
+        st.markdown(f"**{cc.get('groq_model', 'Groq')}**")
+        
+        if not cc.get("groq_available", True):
+            # Show helpful error, not just "not available"
+            error = cc.get("error", "Unknown error")
+            error_type = cc.get("error_type", "unknown")
+            
+            if error_type == "invalid_key" or "401" in str(error) or "Invalid API Key" in str(error):
+                st.error(
+                    "🔑 **Invalid Groq API Key**\n\n"
+                    "1. Go to https://console.groq.com/keys\n"
+                    "2. Create a new API key\n"
+                    "3. Update `GROQ_API_KEY` in your `.env` file\n"
+                    "4. Restart Streamlit (`Ctrl+C` then `streamlit run app.py`)"
+                )
+            else:
+                st.warning(f"⚠️ Groq cross-check unavailable")
+                with st.expander("Error details"):
+                    st.code(f"Error: {error}")
+            
+            st.caption("Running in 2-signal mode (calibration + uncertainty only)")
+            return
+        
+        groq_resp = cc.get("groq_response", "—")
+        st.info(groq_resp)
+    
+    # NLI verdict — only show when Groq was available
+    if cc.get("groq_available", False):
+        verdict = cc.get("verdict", "unknown")
+        icon    = {"agree": "🟢", "neutral": "🟡", "contradict": "🔴"}.get(verdict, "⚪")
+        agr     = cc.get("symmetric_agreement", 0.0)
+        st.markdown(
+            f"**NLI verdict:** {icon} `{verdict.upper()}`  |  "
+            f"Symmetric agreement: `{agr:.3f}`"
+        )
+        
+        ab = cc.get("ab_detail", {})
+        ba = cc.get("ba_detail", {})
+        if ab and ba:
+            from ui.visualizations import nli_scores_chart
+            st.plotly_chart(nli_scores_chart(ab, ba), use_container_width=True)
 
 def render_uncertainty_landscape(sem_detail: dict):
     """UMAP/PCA projection of N response embeddings."""
@@ -122,9 +159,12 @@ def render_uncertainty_landscape(sem_detail: dict):
 
 def render_token_confidence(cal_detail: dict):
     """Bar chart of per-token confidence probabilities."""
-    probs = cal_detail.get("token_probs", [])
+    probs = cal_detail.get("token_probs", None)
+    
     if not probs:
-        st.warning("No token probabilities available.")
+        st.info("Token probability data not available for this response.")
+        st.markdown("**Generated response:**")
+        st.write(cal_detail.get("response", "No response recorded."))
         return
         
     x_labels = [f"t{i}" for i in range(len(probs))]
@@ -230,6 +270,7 @@ def render_system_calibration():
     eval_path = os.path.join(os.path.dirname(__file__), "..", "eval_results.json")
     if not os.path.exists(eval_path):
         st.info("No evaluation data found. Run the evaluation harness to generate a reliability diagram.")
+        st.code("PYTHONPATH=. python evaluation/truthfulqa_eval.py --n 20")
         return
         
     try:

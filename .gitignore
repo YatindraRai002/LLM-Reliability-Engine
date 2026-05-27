@@ -24,3 +24,7 @@ eval_results.json
 .vscode/
 .idea/
 *.swp
+
+# Storage / Cache
+results.db
+calibrator.pkl
