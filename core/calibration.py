@@ -92,3 +92,53 @@ def compute_ece(confidence_bins: list, accuracy_bins: list, n_bins: int = 10) ->
         if mask.sum() == 0: continue
         ece += mask.mean() * abs(accuracies[mask].mean() - confidences[mask].mean())
     return float(ece)
+
+import pickle
+from sklearn.linear_model import LogisticRegression
+
+class PlattCalibrator:
+    """
+    Fits a sigmoid (logistic regression) on top of raw scores.
+    After fitting, output[i] = true P(hallucination | score[i]).
+    """
+    def __init__(self):
+        self.lr = LogisticRegression(C=1.0)
+        self._fitted = False
+
+    def fit(self, raw_scores: list, labels: list):
+        """
+        raw_scores: list of floats
+        labels: 1 = hallucination, 0 = correct
+        """
+        if not raw_scores or not labels:
+            return
+        X = np.array(raw_scores).reshape(-1, 1)
+        y = np.array(labels)
+        self.lr.fit(X, y)
+        self._fitted = True
+
+    def transform(self, score: float) -> float:
+        """
+        Returns calibrated probability. Passes through raw score if not fitted.
+        """
+        if not self._fitted:
+            return score
+        # predict_proba returns probabilities for classes [0, 1]
+        # we want the probability of class 1 (hallucination)
+        return float(self.lr.predict_proba([[score]])[0][1])
+
+    def save(self, path: str):
+        with open(path, 'wb') as f:
+            pickle.dump({'lr': self.lr, 'fitted': self._fitted}, f)
+
+    def load(self, path: str):
+        try:
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
+                self.lr = data['lr']
+                self._fitted = data['fitted']
+        except FileNotFoundError:
+            logger.warning(f"Calibrator not found at {path}, will output raw scores.")
+        except Exception as e:
+            logger.error(f"Failed to load calibrator from {path}: {e}")
+

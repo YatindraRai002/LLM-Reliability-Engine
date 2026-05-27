@@ -104,3 +104,46 @@ async def run_cross_check_async(prompt: str, response_a: str) -> dict:
         "verdict": "agree" if symmetric_agreement > 0.3 else
                    "neutral" if symmetric_agreement > -0.1 else "contradict"
     }
+
+
+def nli_score_sync(premise: str, hypothesis: str) -> dict:
+    """
+    Synchronous NLI scoring function.
+    Used by the evaluation harness and explainer where async context
+    is not available.
+    """
+    try:
+        tokenizer, model = get_nli_model()
+        max_len = 240
+        prem_tokens = tokenizer.encode(premise, add_special_tokens=False)[:max_len]
+        hyp_tokens = tokenizer.encode(hypothesis, add_special_tokens=False)[:max_len]
+        premise_trunc = tokenizer.decode(prem_tokens)
+        hypothesis_trunc = tokenizer.decode(hyp_tokens)
+
+        inputs = tokenizer(
+            premise_trunc,
+            hypothesis_trunc,
+            return_tensors="pt",
+            truncation=True,
+            max_length=512,
+            padding=True
+        ).to(model.device)
+
+        with torch.no_grad():
+            logits = model(**inputs).logits
+
+        probs = torch.softmax(logits[0], dim=-1).tolist()
+        scores = dict(zip(NLI_LABELS, probs))
+
+        return {
+            "contradiction": scores["contradiction"],
+            "entailment": scores["entailment"],
+            "neutral": scores["neutral"],
+            "verdict": max(scores, key=scores.get),
+            "agreement_score": scores["entailment"] - scores["contradiction"]
+        }
+    except Exception as e:
+        logger.error(f"Synchronous NLI score error: {e}")
+        return {"contradiction": 0, "entailment": 0, "neutral": 1,
+                "verdict": "neutral", "agreement_score": 0}
+

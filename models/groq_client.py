@@ -31,13 +31,21 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
 
 class GroqClient:
     def __init__(self):
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            logger.error("GROQ_API_KEY not found in .env file")
-            raise ValueError("Missing GROQ_API_KEY")
+        self._api_key = os.getenv("GROQ_API_KEY")
+        self._client = None
+        if not self._api_key:
+            logger.warning("GROQ_API_KEY not found in environment. GroqClient calls will fail until it is set.")
 
-        # Payload balancing/Security: Use a timeout to prevent hanging requests
-        self.client = AsyncGroq(api_key=api_key, timeout=30.0)
+    @property
+    def client(self):
+        if self._client is None:
+            api_key = os.getenv("GROQ_API_KEY") or self._api_key
+            if not api_key:
+                logger.error("GROQ_API_KEY not found in environment or .env file")
+                raise ValueError("Missing GROQ_API_KEY environment variable. Please set it in your .env file.")
+            self._api_key = api_key
+            self._client = AsyncGroq(api_key=api_key, timeout=30.0)
+        return self._client
 
     @retry_with_backoff()
     async def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 256) -> str:

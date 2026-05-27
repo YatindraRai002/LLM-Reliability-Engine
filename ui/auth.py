@@ -2,16 +2,22 @@
 Streamlit Authenticator integration for the Streamlit dashboard.
 Provides secure authentication utilizing bcrypt.
 """
+import os
 import yaml
 from yaml.loader import SafeLoader
 import streamlit as st
 import streamlit_authenticator as stauth
+
+_DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 
 def check_auth() -> bool:
     """
     Returns True if the user is authenticated.
     Call at the top of app.py to protect the page.
     """
+    # If DASHBOARD_PASSWORD is not set, authentication is bypassed
+    if _DASHBOARD_PASSWORD is None:
+        return True
     # Load configuration
     try:
         with open('config.yaml', 'r', encoding='utf-8') as file:

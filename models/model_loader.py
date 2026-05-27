@@ -71,3 +71,30 @@ def get_nli_model():
     model = AutoModelForSequenceClassification.from_pretrained(model_name)
     model.eval()
     return tokenizer, model
+
+def get_system_info() -> dict:
+    """Returns system hardware and loaded model status."""
+    info = {
+        "python_version": sys.version.split(" ")[0],
+        "models_loaded": [],
+    }
+
+    if torch.cuda.is_available():
+        info["gpu"] = torch.cuda.get_device_name(0)
+        vram_alloc = torch.cuda.memory_allocated(0) / (1024**3)
+        vram_res = torch.cuda.memory_reserved(0) / (1024**3)
+        info["vram_usage"] = f"{vram_alloc:.2f}GB alloc / {vram_res:.2f}GB res"
+    else:
+        info["gpu"] = "CPU-only"
+        info["vram_usage"] = "N/A"
+
+    # Check which models are loaded in lru_cache
+    if get_open_model.cache_info().currsize > 0:
+        info["models_loaded"].append(CONFIG["models"]["local"]["name"])
+    if get_embedding_model.cache_info().currsize > 0:
+        info["models_loaded"].append(CONFIG["models"]["embedding"]["name"])
+    if get_nli_model.cache_info().currsize > 0:
+        info["models_loaded"].append(CONFIG["models"]["nli"]["name"])
+
+    return info
+

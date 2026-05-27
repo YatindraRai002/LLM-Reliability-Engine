@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+results.db
+calibrator.pkl
+eval_results.json
+.pytest_cache/

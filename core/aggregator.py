@@ -22,6 +22,14 @@ def load_config():
 
 CONFIG = load_config()
 
+from core.calibration import PlattCalibrator
+calibrator_path = os.path.join(CURRENT_DIR, "..", "calibrator.pkl")
+calibrator = PlattCalibrator()
+if os.path.exists(calibrator_path):
+    calibrator.load(calibrator_path)
+else:
+    logger.warning(f"Calibrator not found at {calibrator_path}, will use raw scores.")
+
 @dataclass
 class HallucinationResult:
     score: float
@@ -31,6 +39,17 @@ class HallucinationResult:
     cross_check_score: float
     weights_used: dict
     explanation: str
+
+    def to_dict(self) -> dict:
+        return {
+            "score": self.score,
+            "label": self.label,
+            "calibration_score": self.calibration_score,
+            "uncertainty_score": self.uncertainty_score,
+            "cross_check_score": self.cross_check_score,
+            "weights_used": self.weights_used,
+            "explanation": self.explanation,
+        }
 
 def aggregate_scores(
     calibration_score: float,
@@ -68,6 +87,12 @@ def aggregate_scores(
         final_score = max(final_score, 0.85)
 
     final_score = float(np.clip(final_score, 0.0, 1.0))
+
+    # Apply Platt Calibration
+    if calibrator is not None:
+        final_score = calibrator.transform(final_score)
+        final_score = float(np.clip(final_score, 0.0, 1.0))
+
     thresholds = CONFIG.get("detection", {}).get("thresholds", {"low": 0.25, "medium": 0.6})
 
     if final_score < thresholds.get("low", 0.25):
@@ -137,7 +162,7 @@ async def run_correction_loop_async(prompt: str, draft_response: str) -> dict:
         f"<|user|>\nQuestion: {prompt}\nDraft Answer: {draft_response}</s>\n<|assistant|>\n"
     )
 
-async with gpu_lock:
+    async with gpu_lock:
         inputs = tokenizer(critique_prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
             critique_ids = model.generate(
@@ -177,15 +202,26 @@ async with gpu_lock:
         "final": final_response
     }
 
-async def async_run_full_pipeline(prompt: str) -> dict:
+async def async_run_full_pipeline(prompt: str, weights: dict = None) -> dict:
     from core.semantic_uncertainty import run_semantic_uncertainty_pipeline_async
     from core.cross_check import run_cross_check_async
     from core.calibration import compute_calibration_from_batch
     from core.sanitizer import sanitize_prompt
+    from core.cache import get_cached, set_cached
 
     safe_prompt = sanitize_prompt(prompt)
     if not safe_prompt:
         raise ValueError("Invalid query after sanitization")
+
+    cached = get_cached(safe_prompt, weights)
+    if cached:
+        # If it was loaded from JSON, result is a dict, need to convert back to HallucinationResult
+        # But we can also just let the caller handle dicts, or convert it here.
+        # Streamlit components expect result as HallucinationResult object in current_result["result"].
+        # So we reconstruct it.
+        if isinstance(cached.get("result"), dict):
+            cached["result"] = HallucinationResult(**cached["result"])
+        return cached
 
     try:
         # 1. Parallel Signal Gathering
@@ -219,7 +255,8 @@ async def async_run_full_pipeline(prompt: str) -> dict:
             cal_score,
             sem_result["uncertainty_score"],
             cc_result["cross_check_uncertainty"],
-            verdict=cc_result.get("verdict", "neutral")
+            verdict=cc_result.get("verdict", "neutral"),
+            weights=weights
         )
 
         # 4. Conditional Self-Correction Loop (Latency Optimization)
@@ -233,14 +270,39 @@ async def async_run_full_pipeline(prompt: str) -> dict:
         else:
             correction_detail = await run_correction_loop_async(safe_prompt, draft_response)
 
-        return {
+        # 5. Generate Explanations
+        try:
+            from core.explainer import generate_explanation
+            explanation_detail = generate_explanation(
+                response=correction_detail["final"],
+                token_probs=sem_result.get("token_probs", []),
+                local_response=draft_response,
+                groq_response=cc_result.get("groq_response", ""),
+                cal=cal_score,
+                unc=sem_result["uncertainty_score"],
+                cc=cc_result["cross_check_uncertainty"],
+                weights=result.weights_used,
+            )
+        except Exception as e:
+            logger.warning(f"Explanation generation failed: {e}")
+            explanation_detail = None
+
+        final_dict = {
             "prompt": prompt,
             "result": result,
             "calibration_detail": {"response": correction_detail["final"], "mean_confidence": cal_score},
             "uncertainty_detail": sem_result,
             "cross_check_detail": cc_result,
-            "correction_detail": correction_detail
+            "correction_detail": correction_detail,
+            "explanation_detail": explanation_detail,
         }
+        
+        # Need to convert HallucinationResult to dict for caching
+        cache_dict = final_dict.copy()
+        cache_dict["result"] = cache_dict["result"].to_dict()
+        set_cached(safe_prompt, weights, cache_dict)
+
+        return final_dict
     except torch.cuda.OutOfMemoryError:
         logger.error("GPU OOM occurred during pipeline execution")
         return {
@@ -258,13 +320,13 @@ async def async_run_full_pipeline(prompt: str) -> dict:
             "calibration_detail": {}, "uncertainty_detail": {}, "cross_check_detail": {}, "correction_detail": {}
         }
 
-def run_full_pipeline(prompt: str) -> dict:
+def run_full_pipeline(prompt: str, weights: dict = None) -> dict:
     """Synchronous wrapper for Streamlit compatibility."""
     # We create a new event loop for each request to avoid "different event loop" errors
     # especially since Streamlit's execution environment can be tricky with asyncio.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(async_run_full_pipeline(prompt))
+        return loop.run_until_complete(async_run_full_pipeline(prompt, weights=weights))
     finally:
         loop.close()
