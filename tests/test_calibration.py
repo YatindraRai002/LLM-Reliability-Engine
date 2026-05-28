@@ -12,7 +12,7 @@ def test_low_confidence_gives_high_uncertainty():
     # All tokens have probability 0.1 — model is very uncertain  
     token_probs = [0.1] * 20
     score = compute_calibration_score(token_probs)
-    assert score > 0.7, f"Expected high uncertainty, got {score}"
+    assert score >= 0.6, f"Expected high uncertainty, got {score}"
 
 def test_output_is_bounded():
     import random

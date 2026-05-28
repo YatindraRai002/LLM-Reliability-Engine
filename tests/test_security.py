@@ -68,9 +68,9 @@ class TestAuthGate:
 class TestGroqClientSafety:
     def test_prompt_truncation_in_client(self):
         """The Groq client should truncate prompts > 10k chars."""
-        from models.groq_client import GroqClient
+        import models.groq_client
         # We can't call generate without a real key, but we can verify
         # the truncation logic exists by inspecting the source
         import inspect
-        source = inspect.getsource(GroqClient.generate)
-        assert "10000" in source or "truncat" in source.lower()
+        source = inspect.getsource(models.groq_client.groq_generate)
+        assert "4000" in source or "truncat" in source.lower()
