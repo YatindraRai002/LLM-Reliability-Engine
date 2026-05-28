@@ -95,6 +95,12 @@ streamlit run app.py
 
 ---
 
+## 📝 Recent Updates
+- **Async & Threading Fixes**: Resolved an issue where the `asyncio.run()` call conflicted with FastAPI's main event loop by migrating the analysis pipeline to run seamlessly within a synchronous thread pool (`backend/api.py`).
+- **UI Stability**: Fixed a `KeyError: 'embeddings'` crash in the Streamlit frontend. The visualization now correctly expects PCA-reduced `embeddings_2d` and gracefully handles scenarios where fewer than 2 samples are generated.
+
+---
+
 ## 📁 Project Structure
 - `app.py`: Streamlit dashboard entry point.
 - `core/`: The underlying detection logic (Calibration, Uncertainty, Cross-Check, Aggregator).
