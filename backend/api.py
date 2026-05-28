@@ -21,7 +21,7 @@ class AnalyzeRequest(BaseModel):
     use_local_for_uncertainty: Optional[bool] = False
 
 @app.post("/api/analyze")
-async def analyze_query(request: AnalyzeRequest):
+def analyze_query(request: AnalyzeRequest):
     logger.info(f"Received API request for query: {request.query}")
     try:
         # Run the synchronous pipeline (which handles its own event loop logic internally if needed,

@@ -119,43 +119,67 @@ def _tab_responses(cc: dict):
             st.plotly_chart(nli_scores_chart(ab, ba), use_container_width=True)
 
 def render_uncertainty_landscape(sem_detail: dict):
-    """UMAP/PCA projection of N response embeddings."""
-    embeddings = np.array(sem_detail["embeddings"])
-    labels = sem_detail["cluster_labels"]
-    responses = sem_detail["responses"]
-    
-    if len(embeddings) < 2:
-        st.warning("Not enough samples to visualize landscape.")
-        return
+    """Render the PCA scatter plot of response embeddings."""
+    import streamlit as st
+    from ui.visualizations import uncertainty_scatter
 
-    # PCA to 2D
-    pca = PCA(n_components=2)
-    coords = pca.fit_transform(embeddings)
-    
-    fig = go.Figure()
-    unique_labels = list(set(labels))
-    colors = ["#4C3DB5", "#A03520", "#0D6B50", "#8A5C0A", "#8B2020", "#0E4A8A"]
-    
-    for i, label in enumerate(unique_labels):
-        mask = np.array(labels) == label
-        fig.add_trace(go.Scatter(
-            x=coords[mask, 0],
-            y=coords[mask, 1],
-            mode="markers+text",
-            name=f"Cluster {label}",
-            marker=dict(size=12, color=colors[i % len(colors)]),
-            text=[f"R{j}" for j, m in enumerate(mask) if m],
-            hovertext=[responses[j][:100] + "..." for j, m in enumerate(mask) if m]
-        ))
-    
-    fig.update_layout(
-        title=f"Response clusters — {sem_detail['n_semantic_clusters']} distinct semantic groups",
-        height=400,
-        xaxis_title="PCA dim 1",
-        yaxis_title="PCA dim 2"
+    st.subheader("Semantic uncertainty landscape")
+
+    # ── Metrics row ──────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "Uncertainty score",
+        f"{sem_detail.get('uncertainty_score', 0):.3f}"
     )
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Each point is one sampled response. Tight cluster = consistent model. Scattered = uncertain.")
+    c2.metric(
+        "Semantic clusters",
+        sem_detail.get("n_semantic_clusters", 1),
+        help="More clusters = more inconsistent answers"
+    )
+    c3.metric(
+        "Mean similarity",
+        f"{sem_detail.get('mean_pairwise_similarity', 1.0):.3f}",
+        help="Higher = responses are more consistent"
+    )
+
+    # ── Scatter plot ──────────────────────────────────────────────────────
+    # CORRECT key: embeddings_2d (NOT "embeddings")
+    embeddings_2d = sem_detail.get("embeddings_2d", [])   # ← .get() with default
+    cluster_labels = sem_detail.get("cluster_labels", [])
+    responses = sem_detail.get("responses", [])
+
+    if not embeddings_2d or not cluster_labels or not responses:
+        st.info(
+            "Uncertainty landscape not available. "
+            "This happens when fewer than 2 samples were generated."
+        )
+    else:
+        st.plotly_chart(
+            uncertainty_scatter(
+                embeddings_2d,
+                cluster_labels,
+                responses,
+                sem_detail.get("uncertainty_score", 0.5),
+            ),
+            use_container_width=True,
+        )
+        st.caption(
+            "Each point = one sampled response. "
+            "Tight cluster = consistent model. "
+            "Scattered = uncertain."
+        )
+
+    # ── Sampled responses expander ────────────────────────────────────────
+    if responses:
+        with st.expander(
+            f"All {len(responses)} sampled responses", expanded=False
+        ):
+            for i, (resp, lbl) in enumerate(
+                zip(responses, cluster_labels or [0] * len(responses))
+            ):
+                st.markdown(f"**Sample {i+1}** (cluster {lbl}):")
+                st.write(resp)
+                st.divider()
 
 def render_token_confidence(cal_detail: dict):
     """Bar chart of per-token confidence probabilities."""

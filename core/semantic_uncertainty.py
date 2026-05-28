@@ -110,15 +110,35 @@ def compute_semantic_uncertainty(responses: list[str]) -> dict:
     max_entropy = np.log(n) if n > 1 else 1.0
     normalized_entropy = semantic_entropy / max_entropy if max_entropy > 0 else 0.0
 
-    return {
+    # Project to 2D for the scatter plot
+    from sklearn.decomposition import PCA
+    embeddings_np = embeddings.cpu().numpy()
+    if n >= 2:
+        pca = PCA(n_components=2)
+        coords_2d = pca.fit_transform(embeddings_np).tolist()
+    else:
+        coords_2d = [[0.0, 0.0]] * n
+
+    result = {
         "uncertainty_score": uncertainty_score,
         "normalized_entropy": normalized_entropy,
         "n_semantic_clusters": n_clusters,
         "mean_pairwise_similarity": mean_similarity,
         "cluster_labels": labels.tolist(),
-        "embeddings": embeddings.cpu().numpy().tolist(),
+        "embeddings_2d": coords_2d,
         "responses": responses
     }
+    logger.info(
+        f"Uncertainty={result['uncertainty_score']:.3f} "
+        f"clusters={result['n_semantic_clusters']} "
+        f"keys={list(result.keys())}"
+    )
+    return result
+
+def run_semantic_uncertainty_pipeline(prompt: str, use_local: bool = False) -> dict:
+    import asyncio
+    responses = asyncio.run(generate_n_samples_batch(prompt))
+    return compute_semantic_uncertainty(responses)
 
 async def run_semantic_uncertainty_pipeline_async(prompt: str) -> dict:
     """Async pipeline orchestrator."""
