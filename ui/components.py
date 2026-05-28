@@ -216,14 +216,26 @@ def render_explanations(result_dict: dict):
     """Render the Explanations tab with token highlighting, contradictions, and signal SHAP."""
     explanation = result_dict.get("explanation_detail")
 
-    if explanation is None:
+    # explain might be None, empty dict, or missing keys
+    if not explanation or not isinstance(explanation, dict):
         st.info("Explanation data is not available for this result.")
+        st.caption("This happens when the explainer module didn't run.")
+        return
+    
+    # Check if explainer ran but produced empty output
+    if not any([
+        explanation.get("flagged_spans"),
+        explanation.get("signal_pct"),
+        explanation.get("recommendations"),
+        explanation.get("highlighted_html")
+    ]):
+        st.info("No significant explanation signals found for this response.")
         return
 
     # ---- 1. Color-coded Response ----
     st.subheader("🔍 Token-Level Confidence")
-    if hasattr(explanation, "highlighted_html") and explanation.highlighted_html:
-        st.markdown(explanation.highlighted_html, unsafe_allow_html=True)
+    if explanation.get("highlighted_html"):
+        st.markdown(explanation["highlighted_html"], unsafe_allow_html=True)
         st.caption("Each token is colored by the model's confidence. Red = uncertain, Green = confident.")
     else:
         st.info("Token-level highlighting is not available.")
@@ -232,8 +244,8 @@ def render_explanations(result_dict: dict):
 
     # ---- 2. Signal Contribution (SHAP-style) ----
     st.subheader("📊 Signal Contribution Analysis")
-    if hasattr(explanation, "signal_pct") and explanation.signal_pct:
-        signal = explanation.signal_pct
+    if explanation.get("signal_pct"):
+        signal = explanation["signal_pct"]
 
         fig = go.Figure(go.Bar(
             x=[signal.get("calibration", 0), signal.get("semantic_uncertainty", 0), signal.get("cross_check", 0)],
@@ -258,13 +270,13 @@ def render_explanations(result_dict: dict):
 
     # ---- 3. Contradicting Sentences ----
     st.subheader("🔴 Contradicting Sentences")
-    if hasattr(explanation, "contradicting_sentences") and explanation.contradicting_sentences:
-        for cs in explanation.contradicting_sentences:
+    if explanation.get("contradicting_sentences"):
+        for cs in explanation["contradicting_sentences"]:
             st.markdown(
                 f'<div style="background-color:#FCEBEB; border-left:4px solid #A32D2D; '
                 f'padding:10px; margin:5px 0; border-radius:4px;">'
-                f'<strong style="color:#A32D2D;">Contradiction Score: {cs.contradiction_score:.3f}</strong><br>'
-                f'<span style="color:#333;">{cs.sentence}</span>'
+                f'<strong style="color:#A32D2D;">Contradiction Score: {cs.get("contradiction_score", 0):.3f}</strong><br>'
+                f'<span style="color:#333;">{cs.get("sentence", "")}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -275,8 +287,8 @@ def render_explanations(result_dict: dict):
 
     # ---- 4. Recommendations ----
     st.subheader("💡 Recommendations")
-    if hasattr(explanation, "recommendations") and explanation.recommendations:
-        for rec in explanation.recommendations:
+    if explanation.get("recommendations"):
+        for rec in explanation["recommendations"]:
             st.markdown(f"- {rec}")
     else:
         st.success("✅ No actionable recommendations.")

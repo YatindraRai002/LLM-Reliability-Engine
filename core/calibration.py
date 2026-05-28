@@ -110,13 +110,14 @@ def get_generation_with_scores(
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=max_tokens,
+                max_new_tokens=300,
+                min_new_tokens=50,
                 do_sample=False,               # greedy decoding
                 return_dict_in_generate=True,  # REQUIRED for .scores access
                 output_scores=True,            # REQUIRED for logit capture
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                repetition_penalty=1.1,        # reduce repetition loops
+                repetition_penalty=1.15,        # reduce repetition loops
             )
 
         # Verify scores were actually captured

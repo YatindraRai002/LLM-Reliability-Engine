@@ -108,30 +108,33 @@ def groq_generate_n_parallel(
     temperature: float = None,
 ) -> list:
     """Generate N responses in parallel. Returns list of strings."""
-    n    = n    or CONFIG["semantic_uncertainty"]["n_samples"]
-    temp = temperature or CONFIG["semantic_uncertainty"]["temperature"]
-    max_workers = min(n, CONFIG["groq"]["max_concurrent_requests"])
-    stagger = CONFIG["groq"]["request_stagger_ms"] / 1000.0
-
+    n    = n    or CONFIG["sampling"]["n_samples"]
+    temp = temperature or CONFIG["sampling"]["temperature"]
+    
+    logger.info(f"Requesting {n} Groq samples at temp={temp}")
+    
     def _call(i: int) -> str:
-        time.sleep(i * stagger)
+        time.sleep(i * 0.2)  # stagger 200ms
         return groq_generate(prompt, temperature=temp)
 
     results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_call, i): i for i in range(n)}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(_call, i) for i in range(n)]
         for f in as_completed(futures):
             try:
                 text = f.result()
                 if text.strip():
                     results.append(text)
+                    logger.info(f"  Got sample {len(results)}/{n}")
             except Exception as e:
-                logger.warning(f"Groq sample failed: {e}")
+                logger.error(f"  Sample failed: {e}")
 
-    if len(results) < max(n // 2, 2):
+    logger.info(f"Sampling complete: {len(results)}/{n} succeeded")
+    
+    if len(results) < 2:
         raise RuntimeError(
-            f"Too many Groq failures: {len(results)}/{n} samples. "
-            "Check your API key and rate limits."
+            f"Too many Groq failures: only {len(results)}/{n} samples. "
+            "Need at least 2. Check your API key and rate limits."
         )
     return results
 

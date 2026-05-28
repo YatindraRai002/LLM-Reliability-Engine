@@ -91,6 +91,24 @@ def symmetric_nli(response_a: str, response_b: str) -> dict:
     }
 
 
+def _clean_response_for_nli(text: str) -> str:
+    """
+    Ensure text ends at a sentence boundary for better NLI scoring.
+    Truncated sentences confuse the NLI model and produce neutral verdicts.
+    """
+    if not text:
+        return text
+    # Find the last sentence-ending punctuation
+    last_end = max(
+        text.rfind('.'),
+        text.rfind('!'),
+        text.rfind('?'),
+    )
+    if last_end > len(text) * 0.5:  # only truncate if we keep >50% of text
+        return text[:last_end + 1].strip()
+    return text.strip()
+
+
 def run_cross_check(prompt: str, local_response: str) -> dict:
     """
     Full cross-check pipeline.
@@ -129,7 +147,9 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
     logger.info(f"Groq response: {groq_response[:80]}...")
     
     # Step 2: Run bidirectional NLI
-    nli_result = symmetric_nli(local_response, groq_response)
+    clean_local = _clean_response_for_nli(local_response)
+    clean_groq  = _clean_response_for_nli(groq_response)
+    nli_result = symmetric_nli(clean_local, clean_groq)
     
     logger.info(
         f"Cross-check: verdict={nli_result['verdict']} "

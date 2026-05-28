@@ -78,7 +78,20 @@ def render_analytics_dashboard():
     st.markdown("---")
     
     # 5. Raw Data Table
-    st.subheader("Recent Queries")
+    col_t1, col_t2 = st.columns([5, 1])
+    with col_t1:
+        st.subheader("Recent Queries")
+    with col_t2:
+        if st.button("🗑️ Clear history", type="secondary"):
+            try:
+                conn = sqlite3.connect(SQLITE_DB_PATH)
+                conn.execute("DELETE FROM results")
+                conn.commit()
+                conn.close()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to clear history: {e}")
+
     st.dataframe(
         df.sort_values(by="timestamp", ascending=False).drop(columns=["id", "weights"]).head(50),
         use_container_width=True

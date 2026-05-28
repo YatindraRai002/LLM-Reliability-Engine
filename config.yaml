@@ -14,15 +14,15 @@ models:
 
 detection:
   weights:
-    calibration: 0.25
+    calibration: 0.20
     semantic_uncertainty: 0.50
-    cross_check: 0.25
+    cross_check: 0.30
   thresholds:
-    low: 0.40
-    medium: 0.65
+    low: 0.42
+    medium: 0.68
 
 sampling:
-  n_samples: 2
+  n_samples: 6
   temperature: 0.8
 
 credentials:

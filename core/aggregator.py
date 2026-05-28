@@ -251,6 +251,22 @@ def run_full_pipeline(
     timings["total"] = round(time.time()-t0, 2)
     logger.info(f"=== Done: {result.score:.3f} ({result.label}) mode={result.mode} ===")
 
+    from core.explainer import generate_explanation
+    from dataclasses import asdict
+    
+    explanation_obj = generate_explanation(
+        response=cal_detail.get("response", ""),
+        token_probs=cal_detail.get("token_probs", []),
+        local_response=cal_detail.get("response", ""),
+        groq_response=cc_detail.get("groq_response", ""),
+        cal=cal_score,
+        unc=sem_score,
+        cc=cc_score,
+        weights={"calibration": result.weights_used["calibration"], 
+                 "semantic_uncertainty": result.weights_used["uncertainty"], 
+                 "cross_check": result.weights_used["cross_check"]}
+    )
+
     return {
         "prompt":             prompt,
         "result":             result,
@@ -261,4 +277,5 @@ def run_full_pipeline(
         "cross_check_detail": cc_detail,
         "cross_check_score":  cc_score,
         "timings":            timings,
+        "explanation_detail": asdict(explanation_obj),
     }

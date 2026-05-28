@@ -70,6 +70,39 @@ async def generate_n_samples_batch(
             logger.error(f"Batch generation error: {e}")
             return [""] * n
 
+def _project_2d(embeddings: np.ndarray) -> np.ndarray:
+    n = embeddings.shape[0]
+    
+    if n < 2:
+        return np.zeros((n, 2), dtype=np.float32)
+    
+    if n == 2:
+        # PCA with 2 samples gives degenerate dim 2
+        # Just place them on a line with unit spacing
+        vec = embeddings[1] - embeddings[0]
+        norm = np.linalg.norm(vec)
+        if norm < 1e-8:
+            # Identical embeddings — place side by side
+            return np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+        unit = vec / norm
+        proj0 = float(np.dot(embeddings[0], unit))
+        proj1 = float(np.dot(embeddings[1], unit))
+        return np.array([[proj0, 0.0], [proj1, 0.0]], dtype=np.float32)
+    
+    # Normal PCA for n >= 3
+    from sklearn.decomposition import PCA
+    
+    # Check for degenerate case: near-zero variance
+    variance = np.var(embeddings, axis=0).sum()
+    if variance < 1e-8:
+        np.random.seed(42)
+        jitter = np.random.normal(0, 0.01, embeddings.shape)
+        embeddings = embeddings + jitter
+    
+    pca    = PCA(n_components=2)
+    coords = pca.fit_transform(embeddings).astype(np.float32)
+    return coords
+
 def compute_semantic_uncertainty(responses: list[str]) -> dict:
     """
     Compute semantic uncertainty using embedding clustering.
@@ -111,13 +144,8 @@ def compute_semantic_uncertainty(responses: list[str]) -> dict:
     normalized_entropy = semantic_entropy / max_entropy if max_entropy > 0 else 0.0
 
     # Project to 2D for the scatter plot
-    from sklearn.decomposition import PCA
     embeddings_np = embeddings.cpu().numpy()
-    if n >= 2:
-        pca = PCA(n_components=2)
-        coords_2d = pca.fit_transform(embeddings_np).tolist()
-    else:
-        coords_2d = [[0.0, 0.0]] * n
+    coords_2d = _project_2d(embeddings_np).tolist()
 
     result = {
         "uncertainty_score": uncertainty_score,
