@@ -82,11 +82,12 @@ export default function Home() {
 
           {/* Query Input */}
           <div className="query-input-wrapper">
-            <input
-              className="query-input"
-              type="text"
-              placeholder="e.g. Who invented the telephone?"
-              value={query}
+              <input
+                suppressHydrationWarning
+                className="query-input"
+                type="text"
+                placeholder="e.g. Who invented the telephone?"
+                value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
               disabled={loading}
@@ -107,7 +108,7 @@ export default function Home() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               style={{
-                marginTop: 16,
+                marginTop: "16px",
                 padding: "12px 20px",
                 background: "rgba(244,63,94,0.1)",
                 border: "1px solid rgba(244,63,94,0.3)",
