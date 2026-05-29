@@ -35,7 +35,7 @@ async def generate_n_samples_batch(
     """
     n = n or CONFIG["sampling"].get("n_samples", 3)
     temp = temperature or CONFIG["sampling"].get("temperature", 0.8)
-    max_tokens = 64
+    max_tokens = 200
 
     logger.info(f"Generating {n} samples with temperature {temp} in a single batch...")
 
@@ -52,11 +52,13 @@ async def generate_n_samples_batch(
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=max_tokens,
+                    min_new_tokens=30,
                     do_sample=True,
                     temperature=temp,
                     top_p=0.95,
                     top_k=50, # Limit search space for speed
                     use_cache=True, # CRITICAL: Enable KV Caching
+                    repetition_penalty=1.15,
                     pad_token_id=tokenizer.eos_token_id
                 )
 

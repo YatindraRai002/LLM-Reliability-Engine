@@ -170,3 +170,7 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
         "ab_detail":               nli_result["ab_scores"],
         "ba_detail":               nli_result["ba_scores"],
     }
+
+
+# Alias for backward compatibility — explainer.py and truthfulqa_eval.py import this name
+nli_score_sync = nli_score
