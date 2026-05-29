@@ -9,6 +9,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.aggregator import run_full_pipeline
+from core.cache import set_cached
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,9 @@ def analyze_query(request: AnalyzeRequest):
         # Run the synchronous pipeline (which handles its own event loop logic internally if needed,
         # or runs synchronously if we rewrote it to be fully synchronous)
         result_dict = run_full_pipeline(request.query, request.use_local_for_uncertainty)
+        
+        # Persist to SQLite for analytics dashboard
+        set_cached(request.query, None, result_dict)
         
         # Convert HallucinationResult dataclass to dict so FastAPI can serialize it
         if "result" in result_dict and hasattr(result_dict["result"], "to_dict"):
