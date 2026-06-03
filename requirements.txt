@@ -1,8 +1,12 @@
 # requirements.txt — strict version pinning for supply-chain safety
---extra-index-url https://download.pytorch.org/whl/cu121
-torch>=2.9.0
-torchvision>=0.24.0
-torchaudio>=2.11.0
+# PyTorch: on Linux/Windows with NVIDIA GPU, uncomment the line below and
+# replace cu121 with your CUDA version (cu118, cu121, cu124, etc.):
+#   --extra-index-url https://download.pytorch.org/whl/cu121
+# On macOS (Apple Silicon / Intel CPU) just use the default PyPI wheels:
+#   pip install torch torchvision torchaudio
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
 transformers>=4.57.3
 accelerate>=1.12.0
 bitsandbytes>=0.49.0
