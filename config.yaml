@@ -39,3 +39,19 @@ cookie:
 preauthorized:
   emails:
   - admin@example.com
+
+explanation:
+  enabled: true
+  token_attribution:
+    enabled: true
+    low_confidence_threshold: 0.5    # flag tokens where prob < mean * this
+    mild_threshold: 0.75             # yellow highlight: prob between mean*0.5 and mean*0.75
+  sentence_nli:
+    enabled: true
+    contradiction_label: "CONTRADICTION"
+    contradiction_threshold: 0.50    # minimum contradiction score to flag a sentence
+  signal_shap:
+    enabled: true
+  recommendations:
+    calibration_dominant_threshold: 0.40   # calibration % above which to fire cal recommendation
+    semantic_dominant_threshold: 0.50      # semantic % above which to fire semantic recommendation
