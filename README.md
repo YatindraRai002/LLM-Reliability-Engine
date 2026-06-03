@@ -108,3 +108,74 @@ streamlit run app.py
 - `evaluation/`: TruthfulQA benchmarking and pipeline profiling scripts.
 - `ui/`: Dashboard modules, authentication, and visual PCA plots.
 - `scripts/`: Dev tools like API smoke tests.
+
+---
+
+## 🔬 Phase B — Explanation Engine
+
+Phase B adds a post-scoring explanation layer that attributes *why* a response was flagged as high-risk. It **does not change** the detection scoring logic.
+
+### What Phase B produces
+
+`ExplanationResult` — a dataclass returned alongside the hallucination score:
+
+| Field | Type | Description |
+|---|---|---|
+| `flagged_spans` | `List[FlaggedSpan]` | Tokens where `prob < mean × 0.5` |
+| `contradicting_sentences` | `List[ContradictingSentence]` | Sentences that contradict the Groq oracle (per DeBERTa NLI) |
+| `signal_pct` | `Dict[str, float]` | % contribution of each signal to the final score |
+| `recommendations` | `List[str]` | Plain-English risk drivers |
+
+### Three explanation sub-modules (`core/explainer.py`)
+
+#### 1. Token Attribution
+- Computes mean token probability across the full response
+- Flags tokens where `prob < mean × low_confidence_threshold` (configurable)
+- Returns `FlaggedSpan(token, position, probability, reason="low_confidence")`
+- Color bands in the UI: 🔴 Red (flagged) · 🟡 Yellow (mild) · ⬜ Neutral · 🟢 Green (confident)
+
+#### 2. Sentence-Level NLI
+- Splits the local response with `nltk.sent_tokenize`
+- Runs each sentence through the **same** DeBERTa model already loaded by `cross_check.py` (no second load)
+- Returns `ContradictingSentence(text, nli_score, label, entailment_score)` for contradictions
+- Skipped automatically when Groq ran in degraded mode (oracle unavailable)
+
+#### 3. Signal SHAP (Ablation)
+- Lightweight ablation — **not** full Shapley values
+- For each signal: measures marginal contribution by zeroing its weight and renormalising
+- Returns `{"calibration": %, "semantic_uncertainty": %, "cross_check": %}` summing to 100%
+- Pure arithmetic — zero extra model calls
+
+### Configuration gating (`config.yaml`)
+
+```yaml
+explanation:
+  enabled: true                        # master switch
+  token_attribution:
+    enabled: true
+    low_confidence_threshold: 0.5      # prob < mean × this → flagged (red)
+    mild_threshold: 0.75               # prob between mean×0.5 and mean×0.75 → yellow
+  sentence_nli:
+    enabled: true
+    contradiction_threshold: 0.50
+  signal_shap:
+    enabled: true
+  recommendations:
+    calibration_dominant_threshold: 0.40
+    semantic_dominant_threshold: 0.50
+```
+
+### UI — "Show explanation (slower)" checkbox
+
+The Streamlit dashboard (`app.py`) has a checkbox that controls explanation generation:
+- **Unchecked** (default): `explain=False` is passed to `run_full_pipeline()` → zero NLI overhead, `explanation_detail={}` in the result
+- **Checked**: full explanation runs, Explanations tab shows token highlights, contradiction diff (side-by-side local vs oracle), signal attribution bars, and recommendations
+
+### Running the Phase B tests
+
+```bash
+PYTHONPATH=. pytest tests/test_explainer.py -v
+```
+
+> **Branch**: `phase-b/explanation-engine` — open for review, do not merge to main until all tests pass.
+
