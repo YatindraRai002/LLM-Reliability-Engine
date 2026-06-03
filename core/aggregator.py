@@ -170,7 +170,11 @@ def run_full_pipeline(
     prompt: str,
     use_local_for_uncertainty: bool = False,
     weights: Optional[dict] = None,
+    explain: bool = True,
 ) -> dict:
+    # NOTE: `explain=False` sets explanation_detail={} in the returned dict.
+    # Downstream consumers (UI, tests, analytics) must use .get() to access
+    # explanation fields — never assume the key contains a populated dict.
     from core.calibration          import get_generation_with_scores, compute_calibration_score
     from core.semantic_uncertainty import compute_semantic_uncertainty
     from core.cross_check          import run_cross_check
@@ -251,21 +255,33 @@ def run_full_pipeline(
     timings["total"] = round(time.time()-t0, 2)
     logger.info(f"=== Done: {result.score:.3f} ({result.label}) mode={result.mode} ===")
 
-    from core.explainer import generate_explanation
-    from dataclasses import asdict
-    
-    explanation_obj = generate_explanation(
-        response=cal_detail.get("response", ""),
-        token_probs=cal_detail.get("token_probs", []),
-        local_response=cal_detail.get("response", ""),
-        groq_response=cc_detail.get("groq_response", ""),
-        cal=cal_score,
-        unc=sem_score,
-        cc=cc_score,
-        weights={"calibration": result.weights_used["calibration"], 
-                 "semantic_uncertainty": result.weights_used["uncertainty"], 
-                 "cross_check": result.weights_used["cross_check"]}
-    )
+    # ── Step 5: Explanation (Phase B) ──────────────────────────────────────
+    # Gated by the `explain` parameter — set False in evaluation harness or
+    # when the UI "Show explanation" checkbox is unchecked to avoid NLI overhead.
+    # explanation_detail is always present in the return dict; it may be {} when
+    # explain=False. All callers must use result_dict.get("explanation_detail", {}).
+    if explain:
+        from core.explainer import generate_explanation
+        from dataclasses import asdict
+
+        explanation_obj = generate_explanation(
+            response=cal_detail.get("response", ""),
+            token_probs=cal_detail.get("token_probs", []),
+            local_response=cal_detail.get("response", ""),
+            groq_response=cc_detail.get("groq_response") or None,
+            cal=cal_score,
+            unc=sem_score,
+            cc=cc_score,
+            weights={
+                "calibration":          result.weights_used["calibration"],
+                "semantic_uncertainty": result.weights_used["uncertainty"],
+                "cross_check":          result.weights_used["cross_check"],
+            },
+        )
+        explanation_detail = explanation_obj.to_dict()
+    else:
+        logger.info("run_full_pipeline: explain=False — skipping explanation engine")
+        explanation_detail = {}  # downstream: always use .get() on this
 
     return {
         "prompt":             prompt,
@@ -277,5 +293,5 @@ def run_full_pipeline(
         "cross_check_detail": cc_detail,
         "cross_check_score":  cc_score,
         "timings":            timings,
-        "explanation_detail": asdict(explanation_obj),
+        "explanation_detail": explanation_detail,
     }

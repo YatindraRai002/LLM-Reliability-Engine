@@ -39,13 +39,20 @@ SQLITE_DB_PATH = os.path.join(_ROOT, "results.db")
 class AnalyzeRequest(BaseModel):
     query: str
     use_local_for_uncertainty: Optional[bool] = False
+    # explain=False skips the Phase B explanation engine for speed.
+    # Downstream consumers must use result_dict.get("explanation_detail", {}).
+    explain: Optional[bool] = True
 
 
 @app.post("/api/analyze")
 def analyze_query(request: AnalyzeRequest):
     logger.info(f"Received API request for query: {request.query}")
     try:
-        result_dict = run_full_pipeline(request.query, request.use_local_for_uncertainty)
+        result_dict = run_full_pipeline(
+            request.query,
+            request.use_local_for_uncertainty,
+            explain=request.explain if request.explain is not None else True,
+        )
 
         # Persist to SQLite for analytics dashboard
         set_cached(request.query, None, result_dict)
