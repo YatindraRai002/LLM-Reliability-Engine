@@ -156,7 +156,17 @@ class TestSignalShap:
 
 class TestSentenceNLI:
     def test_sentence_nli_catches_contradiction(self):
-        """Mock NLI model returning high contradiction — sentence should be returned."""
+        """Real find_contradicting_sentences() should return a ContradictingSentence
+        when the mocked NLI model reports high contradiction probability.
+
+        core.cross_check imports torch at module level, so it can't be imported
+        in test environments without a GPU. We inject a lightweight mock into
+        sys.modules so the lazy import inside find_contradicting_sentences()
+        receives our stand-in. This exercises the REAL function logic.
+        """
+        import sys
+        from types import ModuleType
+
         mock_scores = {
             "contradiction": 0.85,
             "entailment":    0.05,
@@ -164,20 +174,29 @@ class TestSentenceNLI:
             "verdict":       "contradiction",
             "agreement":     -0.80,
         }
-        with patch("core.explainer.find_contradicting_sentences") as mock_fn:
-            mock_fn.return_value = [
-                ContradictingSentence(
-                    text="The earth is flat.",
-                    nli_score=0.85,
-                    label="CONTRADICTION",
-                    entailment_score=0.05,
-                )
-            ]
-            result = mock_fn("The earth is flat.", "The earth is a sphere.")
-        assert len(result) == 1
-        assert result[0].text == "The earth is flat."
-        assert result[0].nli_score > 0.5
+
+        # Build a minimal mock module that exposes nli_score_sync
+        mock_cc = ModuleType("core.cross_check")
+        mock_cc.nli_score_sync = lambda premise, hypothesis: mock_scores  # type: ignore
+
+        original = sys.modules.get("core.cross_check")
+        sys.modules["core.cross_check"] = mock_cc
+        try:
+            result = find_contradicting_sentences(
+                "The earth is flat.",     # local_response — one clear sentence
+                "The earth is a sphere.",  # groq_response
+            )
+        finally:
+            # Always restore — don't pollute other tests
+            if original is None:
+                sys.modules.pop("core.cross_check", None)
+            else:
+                sys.modules["core.cross_check"] = original
+
+        assert len(result) == 1, f"Expected 1 contradiction, got {len(result)}"
         assert result[0].label == "CONTRADICTION"
+        assert result[0].nli_score > 0.5
+        assert "flat" in result[0].text
 
     def test_graceful_degradation_no_oracle(self):
         """Passing None as oracle response must not raise and must return empty list."""

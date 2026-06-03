@@ -28,8 +28,15 @@ logger = logging.getLogger(__name__)
 # ── Config ───────────────────────────────────────────────────────────────────
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-with open(os.path.join(_ROOT, "config.yaml")) as _f:
-    _CONFIG = yaml.safe_load(_f)
+try:
+    with open(os.path.join(_ROOT, "config.yaml")) as _f:
+        _CONFIG = yaml.safe_load(_f) or {}
+except FileNotFoundError:
+    _CONFIG = {}
+    # Logger not yet fully configured at module load; use basicConfig-safe call.
+    logging.getLogger(__name__).warning(
+        "explainer: config.yaml not found — all thresholds will use built-in defaults"
+    )
 
 _EXPL_CFG   = _CONFIG.get("explanation", {})
 _TOKEN_CFG  = _EXPL_CFG.get("token_attribution", {})

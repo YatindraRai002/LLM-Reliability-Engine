@@ -314,12 +314,14 @@ def render_explanations(result_dict: dict):
                 )
 
             with col_groq:
+                # Pre-compute the ellipsis string
+                ellipsis_str = "…" if len(groq_resp) > 400 else ""
                 st.markdown(
                     f'<div style="background-color:#EAF3DE; border-left:4px solid #27500A; '
                     f'padding:10px; border-radius:4px; height:100%;">'  
                     f'<strong style="color:#27500A; font-size:0.8em;">ORACLE (Groq)</strong><br>'
                     f'<span style="color:#333;">{_html_escape_ui(groq_resp[:400])}'
-                    f'{'…' if len(groq_resp) > 400 else ''}'
+                    f'{ellipsis_str}'
                     f'</span></div>',
                     unsafe_allow_html=True,
                 )
