@@ -210,55 +210,75 @@ def render_token_confidence(cal_detail: dict):
     st.write(f"**Generated response:** {cal_detail.get('response', 'N/A')}")
 
 
-# ── Explanations Tab ─────────────────────────────────────────────────
-
 def render_explanations(result_dict: dict):
-    """Render the Explanations tab with token highlighting, contradictions, and signal SHAP."""
-    explanation = result_dict.get("explanation_detail")
+    """Render the Explanations tab with token highlighting, contradictions, and signal SHAP.
 
-    # explain might be None, empty dict, or missing keys
+    Uses Phase B ExplanationResult fields:
+      flagged_spans         → list of {token, position, probability, reason}
+      contradicting_sentences → list of {text, nli_score, label, entailment_score}
+      signal_pct            → {calibration, semantic_uncertainty, cross_check}
+      highlighted_html      → pre-rendered HTML string
+      recommendations       → list of strings
+    """
+    explanation = result_dict.get("explanation_detail")  # may be {} when explain=False
+
     if not explanation or not isinstance(explanation, dict):
         st.info("Explanation data is not available for this result.")
-        st.caption("This happens when the explainer module didn't run.")
+        st.caption(
+            "Enable the \"Show explanation (slower)\" checkbox before running analysis "
+            "to generate token highlights, contradiction analysis, and signal attribution."
+        )
         return
-    
+
     # Check if explainer ran but produced empty output
     if not any([
         explanation.get("flagged_spans"),
         explanation.get("signal_pct"),
         explanation.get("recommendations"),
-        explanation.get("highlighted_html")
+        explanation.get("highlighted_html"),
     ]):
         st.info("No significant explanation signals found for this response.")
         return
 
-    # ---- 1. Color-coded Response ----
+    # ── 1. Color-coded Token Response ────────────────────────────────
     st.subheader("🔍 Token-Level Confidence")
     if explanation.get("highlighted_html"):
         st.markdown(explanation["highlighted_html"], unsafe_allow_html=True)
-        st.caption("Each token is colored by the model's confidence. Red = uncertain, Green = confident.")
+        st.caption(
+            "🔴 Red = prob < mean × 0.50 (flagged) · "
+            "🟡 Yellow = prob between mean × 0.50–0.75 (mild) · "
+            "⬜ Neutral · 🟢 Green = above-average confidence"
+        )
     else:
         st.info("Token-level highlighting is not available.")
 
     st.markdown("---")
 
-    # ---- 2. Signal Contribution (SHAP-style) ----
+    # ── 2. Signal Contribution (SHAP-style) ──────────────────────────
     st.subheader("📊 Signal Contribution Analysis")
     if explanation.get("signal_pct"):
         signal = explanation["signal_pct"]
 
         fig = go.Figure(go.Bar(
-            x=[signal.get("calibration", 0), signal.get("semantic_uncertainty", 0), signal.get("cross_check", 0)],
+            x=[
+                signal.get("calibration", 0),
+                signal.get("semantic_uncertainty", 0),
+                signal.get("cross_check", 0),
+            ],
             y=["Calibration", "Semantic Uncertainty", "Cross-Check"],
             orientation="h",
             marker_color=["#4C3DB5", "#A03520", "#0D6B50"],
-            text=[f"{signal.get('calibration', 0):.1f}%", f"{signal.get('semantic_uncertainty', 0):.1f}%", f"{signal.get('cross_check', 0):.1f}%"],
+            text=[
+                f"{signal.get('calibration', 0):.1f}%",
+                f"{signal.get('semantic_uncertainty', 0):.1f}%",
+                f"{signal.get('cross_check', 0):.1f}%",
+            ],
             textposition="outside",
         ))
         fig.update_layout(
             title="Which signal drove the hallucination score?",
             xaxis_title="Contribution (%)",
-            xaxis_range=[0, 100],
+            xaxis_range=[0, 110],
             height=250,
             margin=dict(l=10, r=10, t=40, b=20),
         )
@@ -268,30 +288,69 @@ def render_explanations(result_dict: dict):
 
     st.markdown("---")
 
-    # ---- 3. Contradicting Sentences ----
+    # ── 3. Contradicting Sentences ────────────────────────────────────
     st.subheader("🔴 Contradicting Sentences")
-    if explanation.get("contradicting_sentences"):
-        for cs in explanation["contradicting_sentences"]:
-            st.markdown(
-                f'<div style="background-color:#FCEBEB; border-left:4px solid #A32D2D; '
-                f'padding:10px; margin:5px 0; border-radius:4px;">'
-                f'<strong style="color:#A32D2D;">Contradiction Score: {cs.get("contradiction_score", 0):.3f}</strong><br>'
-                f'<span style="color:#333;">{cs.get("sentence", "")}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+    contradicting = explanation.get("contradicting_sentences", [])
+
+    if contradicting:
+        # Retrieve Groq oracle response for the diff panel
+        groq_resp = (
+            result_dict.get("cross_check_detail", {}).get("groq_response") or ""
+        )
+
+        for cs in contradicting:
+            # Left = flagged sentence  |  Right = oracle response
+            col_local, col_groq = st.columns(2)
+
+            with col_local:
+                st.markdown(
+                    f'<div style="background-color:#FCEBEB; border-left:4px solid #A32D2D; '
+                    f'padding:10px; border-radius:4px; height:100%;">'  
+                    f'<strong style="color:#A32D2D; font-size:0.8em;">'
+                    f'LOCAL · NLI contradiction: {cs.get("nli_score", 0):.3f}</strong><br>'
+                    f'<span style="color:#333;">{_html_escape_ui(cs.get("text", ""))}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            with col_groq:
+                st.markdown(
+                    f'<div style="background-color:#EAF3DE; border-left:4px solid #27500A; '
+                    f'padding:10px; border-radius:4px; height:100%;">'  
+                    f'<strong style="color:#27500A; font-size:0.8em;">ORACLE (Groq)</strong><br>'
+                    f'<span style="color:#333;">{_html_escape_ui(groq_resp[:400])}'
+                    f'{'…' if len(groq_resp) > 400 else ''}'
+                    f'</span></div>',
+                    unsafe_allow_html=True,
+                )
+            st.write("")
     else:
-        st.success("No contradicting sentences detected.")
+        # Explicit green 'no contradictions' state
+        st.success(
+            "✅ No contradicting sentences detected — "
+            "the local response does not contradict the oracle on any sentence."
+        )
 
     st.markdown("---")
 
-    # ---- 4. Recommendations ----
+    # ── 4. Recommendations ───────────────────────────────────────────
     st.subheader("💡 Recommendations")
     if explanation.get("recommendations"):
         for rec in explanation["recommendations"]:
             st.markdown(f"- {rec}")
     else:
         st.success("✅ No actionable recommendations.")
+
+
+def _html_escape_ui(text: str) -> str:
+    """Minimal HTML escaping for UI rendering of user-facing text."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def render_system_calibration():
