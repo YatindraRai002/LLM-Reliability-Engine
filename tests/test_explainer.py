@@ -118,8 +118,15 @@ class TestSignalShap:
         assert abs(total - 100.0) < 0.5, f"Expected ~100, got {total}"
 
     def test_dominant_signal_identified(self):
-        """A very high cross-check score should have the highest contribution."""
-        pct = compute_signal_shap(0.1, 0.1, 0.9)
+        """A very high cross-check score should have the highest contribution.
+
+        The ablation formula produces equal deltas for calibration and
+        semantic_uncertainty when cal == unc (symmetric inputs). To make
+        cross_check genuinely dominant we need cal != unc so the ablations
+        diverge. With cal=0.05, unc=0.50, cc=0.95:
+          cross_check ≈ 50.7% > semantic_uncertainty ≈ 13.1% > calibration ≈ 36.2%
+        """
+        pct = compute_signal_shap(0.05, 0.50, 0.95)
         assert pct["cross_check"] > pct["calibration"]
         assert pct["cross_check"] > pct["semantic_uncertainty"]
 
