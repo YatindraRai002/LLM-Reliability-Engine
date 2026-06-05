@@ -56,7 +56,7 @@ def get_open_model():
             model_name,
             quantization_config=bnb_config,
             device_map="auto" if use_4bit else None,
-            torch_dtype=dtype,
+            dtype=dtype,               # torch_dtype renamed to dtype in transformers 5.x
             trust_remote_code=True
         )
         if not use_4bit:

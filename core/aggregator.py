@@ -62,11 +62,11 @@ def aggregate_scores(
     verdict        = cross_check_result.get("verdict", "neutral")
     cc             = float(np.clip(cc_raw, 0.0, 1.0))
     
-    # Load base weights (using detection/weights from our config.yaml)
+    # Load base weights from config (spec: calibration=0.20, semantic_uncertainty=0.50, cross_check=0.30)
     w = dict(weights or CONFIG["detection"]["weights"])
-    w1 = w.get("calibration", 0.25)
-    w2 = w.get("semantic_uncertainty",  0.30)
-    w3 = w.get("cross_check",  0.45)
+    w1 = w.get("calibration",          0.20)  # spec default
+    w2 = w.get("semantic_uncertainty",  0.50)  # spec default — was wrongly 0.30
+    w3 = w.get("cross_check",           0.30)  # spec default — was wrongly 0.45
     
     mode = "full"
     
@@ -119,9 +119,9 @@ def aggregate_scores(
         uncertainty_score = round(unc, 3),
         cross_check_score = round(cc,  3),
         weights_used      = {
-            "calibration": round(w1, 3),
-            "uncertainty":  round(w2, 3),
-            "cross_check":  round(w3, 3),
+            "calibration":          round(w1, 3),
+            "semantic_uncertainty": round(w2, 3),  # unified — was 'uncertainty'
+            "cross_check":          round(w3, 3),
         },
         thresholds_used   = thr,
         n_samples_used    = n_s,
@@ -274,7 +274,7 @@ def run_full_pipeline(
             cc=cc_score,
             weights={
                 "calibration":          result.weights_used["calibration"],
-                "semantic_uncertainty": result.weights_used["uncertainty"],
+                "semantic_uncertainty": result.weights_used["semantic_uncertainty"],
                 "cross_check":          result.weights_used["cross_check"],
             },
         )
