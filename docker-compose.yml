@@ -7,7 +7,7 @@ services:
       - redis_data:/data
 
   streamlit:
-    build: .
+    build: ./backend
     ports:
       - "8501:8501"
     environment:
@@ -16,12 +16,12 @@ services:
     depends_on:
       - redis
     volumes:
-      - .:/app
+      - ./backend:/app
       - ~/.cache/huggingface:/root/.cache/huggingface
 
   api:
-    build: .
-    command: ["uvicorn", "backend.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    build: ./backend
+    command: ["uvicorn", "api.api:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
     environment:
@@ -30,7 +30,7 @@ services:
     depends_on:
       - redis
     volumes:
-      - .:/app
+      - ./backend:/app
       - ~/.cache/huggingface:/root/.cache/huggingface
 
   prometheus:
@@ -53,6 +53,15 @@ services:
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
 
 volumes:
   redis_data:

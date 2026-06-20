@@ -2,7 +2,7 @@
 Tests for Prometheus metrics integration in the FastAPI backend.
 """
 from fastapi.testclient import TestClient
-from backend.api import app
+from api.api import app
 
 client = TestClient(app)
 
@@ -36,9 +36,9 @@ def test_metrics_increment_on_request(monkeypatch):
         }
     }
     
-    monkeypatch.setattr("backend.api.run_full_pipeline", lambda *args, **kwargs: mock_result)
-    monkeypatch.setattr("backend.api.get_cached", lambda *args, **kwargs: None)
-    monkeypatch.setattr("backend.api.set_cached", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api.api.run_full_pipeline", lambda *args, **kwargs: mock_result)
+    monkeypatch.setattr("api.api.get_cached", lambda *args, **kwargs: None)
+    monkeypatch.setattr("api.api.set_cached", lambda *args, **kwargs: None)
 
     response = client.post("/analyze", json={"prompt": "test query for metrics", "explain": False})
     assert response.status_code == 202

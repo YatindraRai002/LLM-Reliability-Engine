@@ -217,45 +217,20 @@ Controlled by the "Show explanation (slower)" checkbox in the Streamlit UI, or `
 
 ## 📁 Project Structure
 
-```
+```text
 LLM-LIE-DETECTOR/
-├── app.py                      # Streamlit dashboard entry point
-├── config.yaml                 # All hyperparameters
-├── backend/
-│   ├── api.py                  # FastAPI async backend
-│   └── metrics.py              # Prometheus metric definitions
-├── core/
-│   ├── aggregator.py           # Score fusion + parallel S2/S3 pipeline
-│   ├── calibration.py          # Token probability analysis
-│   ├── semantic_uncertainty.py # Groq parallel sampling + clustering
-│   ├── cross_check.py          # Multi-model bidirectional NLI
-│   ├── explainer.py            # Phase B explanation engine
-│   ├── cache.py                # Redis cache + SQLite persistence
-│   └── sanitizer.py            # Input sanitization & injection detection
-├── models/
-│   ├── model_loader.py         # HuggingFace model management (4-bit)
-│   └── groq_client.py          # Groq API with retry & parallel sampling
-├── evaluation/
-│   ├── truthfulqa_eval.py      # TruthfulQA benchmark (n=100)
-│   ├── tune_weights.py         # Weight optimization via grid search
-│   └── platt_calibration.py    # Platt scaling for score calibration
-├── ui/
-│   ├── components.py           # Result rendering & visualizations
-│   ├── analytics.py            # Analytics dashboard
-│   ├── auth.py                 # Authentication gate
-│   └── visualizations.py       # PCA scatter plots
-├── frontend/                   # Next.js web app (experimental)
-├── tests/                      # pytest suite (66 tests, 8 files)
-│   ├── test_api.py             # Async API endpoint tests
-│   ├── test_cache.py           # Redis/SQLite cache tests
-│   ├── test_calibration.py     # Calibration scoring tests
-│   ├── test_evaluation.py      # TruthfulQA harness tests
-│   ├── test_explainer.py       # Phase B explanation tests
-│   ├── test_metrics.py         # Prometheus metrics tests
-│   ├── test_security.py        # Sanitization & auth tests
-│   └── test_semantic_uncertainty.py
-├── Dockerfile                  # Container build
-├── docker-compose.yml          # 5-service stack (app, API, Redis, Prometheus, Grafana)
+├── backend/                    # Python Backend & ML Core
+│   ├── api/                    # FastAPI web server
+│   ├── core/                   # ML detection logic
+│   ├── evaluation/             # Benchmarking scripts
+│   ├── models/                 # Model loaders
+│   ├── ui/                     # Streamlit components
+│   ├── app.py                  # Streamlit entry point
+│   └── Dockerfile              # Python container
+├── frontend/                   # Next.js Web App
+│   ├── src/                    # React components
+│   └── Dockerfile              # Node container
+├── docker-compose.yml          # Orchestrates backend, frontend, redis, prometheus, grafana
 ├── prometheus.yml              # Metrics scraping config
 ├── .github/workflows/ci.yml    # GitHub Actions CI pipeline
 └── SECURITY.md                 # Security hardening documentation

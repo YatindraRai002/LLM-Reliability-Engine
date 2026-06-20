@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.aggregator import run_full_pipeline
 from core.cache import get_cached, set_cached
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from backend.metrics import (
+from api.metrics import (
     REQUEST_COUNT,
     REQUEST_LATENCY,
     HALLUCINATION_SCORE,
