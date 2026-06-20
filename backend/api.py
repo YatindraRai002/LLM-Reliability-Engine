@@ -70,7 +70,21 @@ class AnalyzeRequest(BaseModel):
     explain: Optional[bool] = True
 
 jobs = {}
+MAX_JOBS = 1000
+JOB_TTL = 600  # 10 minutes
 
+def cleanup_jobs():
+    """Remove expired jobs and enforce size limit."""
+    now = time.time()
+    expired = [jid for jid, j in jobs.items() if now - j.get("created_at", now) > JOB_TTL]
+    for jid in expired:
+        del jobs[jid]
+    
+    if len(jobs) > MAX_JOBS:
+        sorted_jobs = sorted(jobs.items(), key=lambda x: x[1].get("created_at", 0))
+        to_delete = len(jobs) - MAX_JOBS
+        for i in range(to_delete):
+            del jobs[sorted_jobs[i][0]]
 
 @app.get("/metrics")
 def get_metrics():
@@ -130,8 +144,9 @@ def background_analyze(job_id: str, request: AnalyzeRequest):
 
 @app.post("/analyze", status_code=202)
 def analyze_query(request: AnalyzeRequest, background_tasks: BackgroundTasks):
+    cleanup_jobs()
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {"status": "pending"}
+    jobs[job_id] = {"status": "pending", "created_at": time.time()}
     background_tasks.add_task(background_analyze, job_id, request)
     return {"job_id": job_id, "status": "pending"}
 

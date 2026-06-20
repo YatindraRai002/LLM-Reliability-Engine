@@ -2,7 +2,6 @@ import argparse
 import json
 import logging
 import os
-import pickle
 
 import numpy as np
 import yaml
@@ -11,7 +10,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 _ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CALIBRATOR_PATH = os.path.join(_ROOT, "evaluation", "platt_calibrator.pkl")
+CALIBRATOR_PATH = os.path.join(_ROOT, "evaluation", "platt_calibrator.json")
 
 
 class PlattCalibrator:
@@ -91,8 +90,13 @@ class PlattCalibrator:
     def save(self, path: str = None):
         path = path or CALIBRATOR_PATH
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump({"lr": self.lr, "fitted": self._fitted}, f)
+        data = {"fitted": self._fitted}
+        if self._fitted:
+            data["coef"] = self.lr.coef_.tolist()
+            data["intercept"] = self.lr.intercept_.tolist()
+            data["classes"] = self.lr.classes_.tolist()
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
         logger.info(f"Calibrator saved to {path}")
 
     def load(self, path: str = None):
@@ -100,10 +104,13 @@ class PlattCalibrator:
         if not os.path.exists(path):
             logger.warning(f"No calibrator found at {path} — using passthrough mode")
             return
-        with open(path, "rb") as f:
-            data = pickle.load(f)
-        self.lr       = data["lr"]
-        self._fitted  = data["fitted"]
+        with open(path, "r") as f:
+            data = json.load(f)
+        self._fitted  = data.get("fitted", False)
+        if self._fitted:
+            self.lr.coef_ = np.array(data["coef"])
+            self.lr.intercept_ = np.array(data["intercept"])
+            self.lr.classes_ = np.array(data["classes"])
         logger.info(f"Calibrator loaded from {path}")
 
     @property

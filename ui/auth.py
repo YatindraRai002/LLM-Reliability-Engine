@@ -43,10 +43,10 @@ def check_auth() -> bool:
         authenticator.logout('Logout', 'sidebar')
         return True
     elif authentication_status == False:
-        st.error('Username or password is incorrect. (Use admin / admin_password)')
+        st.error('Username or password is incorrect.')
         return False
     elif authentication_status == None:
-        st.info('Please enter your username and password. Hint: admin / admin_password')
+        st.info('Please enter your username and password.')
         return False
 
     return False
