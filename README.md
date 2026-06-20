@@ -6,6 +6,7 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.39-red?logo=streamlit&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Async-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-66%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 A production-grade hallucination detection system that identifies when Large Language Models are **lying** — by fusing three independent uncertainty signals into a single calibrated risk score.
@@ -110,6 +111,8 @@ cp .env.example .env
 # GROQ_API_KEY=gsk_your_key_here
 ```
 
+> ⚠️ **Security:** Change the default dashboard credentials in `config.yaml` before deploying publicly. The default `admin/admin_password` is for local development only.
+
 All hyperparameters (weights, thresholds, model names) are centralized in [`config.yaml`](config.yaml).
 
 ---
@@ -120,7 +123,6 @@ All hyperparameters (weights, thresholds, model names) are centralized in [`conf
 ```bash
 streamlit run app.py
 ```
-> **Default credentials:** Username: `admin` | Password: `admin_password`
 
 ### FastAPI Backend
 ```bash
@@ -147,7 +149,7 @@ cd frontend && npm install && npm run dev
 ```bash
 docker-compose up --build
 ```
-This starts the FastAPI backend, Prometheus, and the Streamlit dashboard.
+This starts the FastAPI backend, Redis, Prometheus, Grafana, and the Streamlit dashboard.
 
 ---
 
@@ -161,7 +163,7 @@ $$\text{CalibScore} = 1 - \text{mean}(p_i) + \alpha \cdot \text{std}(p_i)$$
 **Implementation:** [`core/calibration.py`](core/calibration.py)
 
 ### Stage 2: Semantic Uncertainty
-Generates 6 diverse responses via Groq (parallel HTTP calls), embeds them with `all-MiniLM-L6-v2`, and clusters with Agglomerative Clustering. High cluster count = high uncertainty.
+Generates 6 diverse responses via Groq (parallel HTTP calls), embeds them with `all-MiniLM-L6-v2`, and clusters with Agglomerative Clustering. High cluster count = high uncertainty. Falls back to local model generation if Groq is rate-limited.
 
 **Implementation:** [`core/semantic_uncertainty.py`](core/semantic_uncertainty.py)
 
@@ -184,11 +186,15 @@ $$\text{Score} = w_1 \cdot \text{Cal} + w_2 \cdot \text{Unc} + w_3 \cdot \text{C
 | Feature | Implementation |
 |---|---|
 | **Authentication** | `streamlit-authenticator` with bcrypt + JWT sessions |
-| **Rate Limiting** | IP-based sliding window (5 req/min) |
+| **Rate Limiting** | IP-based sliding window (5 req/min) on Streamlit |
+| **API Key Safety** | `.env` in `.gitignore`, key format validation, never logged in full |
 | **Groq Retry** | Exponential backoff with 401/429 handling |
 | **Graceful Degradation** | 2-signal fallback when Groq is down |
-| **Input Sanitization** | Prompt truncation + tokenizer bomb prevention |
-| **Memory Efficiency** | 4-bit quantization + `@lru_cache` for models |
+| **Input Sanitization** | Prompt truncation + injection pattern detection + tokenizer bomb prevention |
+| **SQL Safety** | Parameterized queries only — no string interpolation |
+| **YAML Safety** | `SafeLoader` used for all YAML parsing |
+| **Memory Efficiency** | 4-bit quantization + `@lru_cache` for model singletons |
+| **CORS** | Scoped to `localhost:3000` — no wildcard origins |
 
 Full details in [`SECURITY.md`](SECURITY.md).
 
@@ -219,24 +225,40 @@ LLM-LIE-DETECTOR/
 │   ├── api.py                  # FastAPI async backend
 │   └── metrics.py              # Prometheus metric definitions
 ├── core/
-│   ├── aggregator.py           # Score fusion + parallel pipeline
+│   ├── aggregator.py           # Score fusion + parallel S2/S3 pipeline
 │   ├── calibration.py          # Token probability analysis
-│   ├── semantic_uncertainty.py # Sample clustering
-│   ├── cross_check.py          # Multi-model NLI
+│   ├── semantic_uncertainty.py # Groq parallel sampling + clustering
+│   ├── cross_check.py          # Multi-model bidirectional NLI
 │   ├── explainer.py            # Phase B explanation engine
-│   └── cache.py                # Redis/in-memory response cache
+│   ├── cache.py                # Redis cache + SQLite persistence
+│   └── sanitizer.py            # Input sanitization & injection detection
 ├── models/
-│   ├── model_loader.py         # HuggingFace model management
-│   └── groq_client.py          # Groq API with retry logic
+│   ├── model_loader.py         # HuggingFace model management (4-bit)
+│   └── groq_client.py          # Groq API with retry & parallel sampling
 ├── evaluation/
-│   ├── truthfulqa_eval.py      # TruthfulQA benchmark
-│   ├── tune_weights.py         # Weight optimization
-│   └── platt_calibration.py    # Score calibration
+│   ├── truthfulqa_eval.py      # TruthfulQA benchmark (n=100)
+│   ├── tune_weights.py         # Weight optimization via grid search
+│   └── platt_calibration.py    # Platt scaling for score calibration
+├── ui/
+│   ├── components.py           # Result rendering & visualizations
+│   ├── analytics.py            # Analytics dashboard
+│   ├── auth.py                 # Authentication gate
+│   └── visualizations.py       # PCA scatter plots
 ├── frontend/                   # Next.js web app (experimental)
-├── tests/                      # pytest suite (66 tests)
+├── tests/                      # pytest suite (66 tests, 8 files)
+│   ├── test_api.py             # Async API endpoint tests
+│   ├── test_cache.py           # Redis/SQLite cache tests
+│   ├── test_calibration.py     # Calibration scoring tests
+│   ├── test_evaluation.py      # TruthfulQA harness tests
+│   ├── test_explainer.py       # Phase B explanation tests
+│   ├── test_metrics.py         # Prometheus metrics tests
+│   ├── test_security.py        # Sanitization & auth tests
+│   └── test_semantic_uncertainty.py
 ├── Dockerfile                  # Container build
-├── docker-compose.yml          # Full stack orchestration
-└── prometheus.yml              # Metrics scraping config
+├── docker-compose.yml          # 5-service stack (app, API, Redis, Prometheus, Grafana)
+├── prometheus.yml              # Metrics scraping config
+├── .github/workflows/ci.yml    # GitHub Actions CI pipeline
+└── SECURITY.md                 # Security hardening documentation
 ```
 
 ---
@@ -244,14 +266,14 @@ LLM-LIE-DETECTOR/
 ## 🧪 Testing
 
 ```bash
-# Run full test suite
+# Run full test suite (66 tests)
 PYTHONPATH=. pytest --tb=short
 
 # Run specific test files
-PYTHONPATH=. pytest tests/test_api.py -v          # Async API tests
-PYTHONPATH=. pytest tests/test_explainer.py -v     # Explanation engine
-PYTHONPATH=. pytest tests/test_metrics.py -v       # Prometheus metrics
-PYTHONPATH=. pytest tests/test_security.py -v      # Security tests
+PYTHONPATH=. pytest tests/test_api.py -v
+PYTHONPATH=. pytest tests/test_explainer.py -v
+PYTHONPATH=. pytest tests/test_metrics.py -v
+PYTHONPATH=. pytest tests/test_security.py -v
 ```
 
 ---
