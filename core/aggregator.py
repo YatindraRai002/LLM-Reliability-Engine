@@ -166,32 +166,55 @@ def run_full_pipeline(
     from core.calibration          import get_generation_with_scores, compute_calibration_score
     from core.semantic_uncertainty import run_semantic_uncertainty_pipeline
     from core.cross_check          import run_cross_check
+    from models.groq_client        import safe_groq_cross_check
+    from concurrent.futures import ThreadPoolExecutor
 
     t0 = time.time()
     timings = {}
     logger.info(f"=== Pipeline: '{prompt[:60]}' ===")
 
-    t = time.time()
-    logger.info("Step 1/3: Calibration...")
-    try:
-        cal_detail = get_generation_with_scores(prompt)
-        cal_score  = compute_calibration_score(cal_detail["token_probs"])
-    except Exception as e:
-        logger.error(f"Calibration failed: {e}")
-        from core.calibration import _fallback_result
-        cal_detail = _fallback_result(reason=str(e))
-        cal_score  = 0.5
-    timings["calibration"] = round(time.time()-t, 2)
-    logger.info(f"  cal={cal_score:.3f} ({timings['calibration']}s)")
-
-    from concurrent.futures import ThreadPoolExecutor
-    t23 = time.time()
+    logger.info("Starting Parallel Execution: Calibration, Semantic Uncertainty, and Groq Cross-Check...")
     
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # Start all 3 stages simultaneously
+        future_cal = executor.submit(get_generation_with_scores, prompt)
         future_sem = executor.submit(run_semantic_uncertainty_pipeline, prompt, use_local_for_uncertainty)
-        future_cc = executor.submit(run_cross_check, prompt, cal_detail.get("response", ""))
+        future_groq_cc = executor.submit(safe_groq_cross_check, prompt)
         
-        logger.info("Step 2/3: Semantic uncertainty...")
+        # 1. Wait for Calibration (longest local task)
+        try:
+            cal_detail = future_cal.result()
+            cal_score  = compute_calibration_score(cal_detail["token_probs"])
+        except Exception as e:
+            logger.error(f"Calibration failed: {e}")
+            from core.calibration import _fallback_result
+            cal_detail = _fallback_result(reason=str(e))
+            cal_score  = 0.5
+        timings["calibration"] = round(time.time()-t0, 2)
+        logger.info(f"  cal={cal_score:.3f} ({timings['calibration']}s)")
+        
+        # 2. Wait for Groq Cross-Check reference and run NLI
+        try:
+            groq_result = future_groq_cc.result()
+            cc_detail = run_cross_check(prompt, cal_detail.get("response", ""), precomputed_groq_result=groq_result)
+            cc_score  = cc_detail["cross_check_uncertainty"]
+        except Exception as e:
+            logger.error(f"Cross-check failed: {e}")
+            cc_detail = {
+                "local_response":          cal_detail.get("response",""),
+                "groq_response":           None,
+                "groq_available":          False,
+                "error":                   str(e),
+                "verdict":                 "unavailable",
+                "cross_check_uncertainty": 0.5,
+                "symmetric_agreement":     0.0,
+                "ab_detail": {}, "ba_detail": {},
+            }
+            cc_score = 0.5
+        timings["cross_check"] = round(time.time()-t0, 2)
+        logger.info(f"  cc={cc_score:.3f} ({timings['cross_check']}s)")
+        
+        # 3. Wait for Semantic Uncertainty
         try:
             sem_detail = future_sem.result()
             sem_score = sem_detail["uncertainty_score"]
@@ -207,28 +230,8 @@ def run_full_pipeline(
                 "mean_pairwise_similarity": 1.0,
             }
             sem_score = 0.5
-        timings["semantic_uncertainty"] = round(time.time()-t23, 2)
+        timings["semantic_uncertainty"] = round(time.time()-t0, 2)
         logger.info(f"  unc={sem_score:.3f} ({timings['semantic_uncertainty']}s)")
-
-        logger.info("Step 3/3: Cross-check...")
-        try:
-            cc_detail = future_cc.result()
-            cc_score  = cc_detail["cross_check_uncertainty"]
-        except Exception as e:
-            logger.error(f"Cross-check failed: {e}")
-            cc_detail = {
-                "local_response":          cal_detail.get("response",""),
-                "groq_response":           None,
-                "groq_available":          False,
-                "error":                   str(e),
-                "verdict":                 "unavailable",
-                "cross_check_uncertainty": 0.5,
-                "symmetric_agreement":     0.0,
-                "ab_detail": {}, "ba_detail": {},
-            }
-            cc_score = 0.5
-        timings["cross_check"] = round(time.time()-t23, 2)
-        logger.info(f"  cc={cc_score:.3f} ({timings['cross_check']}s)")
 
     result = aggregate_scores(
         cal_score, sem_score, cc_detail,

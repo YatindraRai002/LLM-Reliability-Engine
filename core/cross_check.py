@@ -106,7 +106,7 @@ def _clean_response_for_nli(text: str) -> str:
     return text.strip()
 
 
-def run_cross_check(prompt: str, local_response: str) -> dict:
+def run_cross_check(prompt: str, local_response: str, precomputed_groq_result: dict = None) -> dict:
     """
     Full cross-check pipeline.
     Uses safe_groq_cross_check so a bad API key never crashes the app.
@@ -116,7 +116,10 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
     """
     from models.groq_client import safe_groq_cross_check
     
-    groq_result = safe_groq_cross_check(prompt)
+    if precomputed_groq_result:
+        groq_result = precomputed_groq_result
+    else:
+        groq_result = safe_groq_cross_check(prompt)
     
     if not groq_result["groq_available"]:
         logger.warning(
