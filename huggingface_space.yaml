@@ -1,0 +1,34 @@
+---
+title: LLM Lie Detector
+emoji: 🔍
+colorFrom: red
+colorTo: purple
+sdk: streamlit
+sdk_version: "1.39.0"
+app_file: app.py
+pinned: false
+license: mit
+tags:
+  - hallucination-detection
+  - nlp
+  - uncertainty-estimation
+  - truthfulqa
+  - llm-safety
+---
+
+# 🔍 LLM Lie Detector
+
+A production-grade hallucination detection system that fuses three independent uncertainty signals — **calibration scoring**, **semantic uncertainty**, and **cross-model NLI** — into a calibrated risk score.
+
+## How it works
+
+1. **Calibration**: Extracts token-level probabilities from a local LLM
+2. **Semantic Uncertainty**: Generates multiple responses and clusters them by meaning
+3. **Cross-Check**: Compares against a remote oracle via DeBERTa NLI
+4. **Aggregation**: Weighted fusion with hard NLI override for contradictions
+
+## Usage
+
+Enter a question in the text box and click **Analyze**. The system will return a risk score (low / medium / high) with detailed signal breakdowns.
+
+Check the **"Show explanation"** checkbox for token-level attribution and sentence-level contradiction detection.
