@@ -9,7 +9,6 @@ from models.model_loader import get_local_model, get_embedding_model, CONFIG
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Removed the global gpu_lock = asyncio.Lock() from here
 
 def _format_prompt(user_msg: str, model_name: str) -> str:
     """Apply the correct chat template per model."""
@@ -56,8 +55,8 @@ async def generate_n_samples_batch(
                     do_sample=True,
                     temperature=temp,
                     top_p=0.95,
-                    top_k=50, # Limit search space for speed
-                    use_cache=True, # CRITICAL: Enable KV Caching
+                    top_k=50,
+                    use_cache=True,
                     repetition_penalty=1.15,
                     pad_token_id=tokenizer.eos_token_id
                 )
@@ -79,22 +78,17 @@ def _project_2d(embeddings: np.ndarray) -> np.ndarray:
         return np.zeros((n, 2), dtype=np.float32)
     
     if n == 2:
-        # PCA with 2 samples gives degenerate dim 2
-        # Just place them on a line with unit spacing
         vec = embeddings[1] - embeddings[0]
         norm = np.linalg.norm(vec)
         if norm < 1e-8:
-            # Identical embeddings — place side by side
             return np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32)
         unit = vec / norm
         proj0 = float(np.dot(embeddings[0], unit))
         proj1 = float(np.dot(embeddings[1], unit))
         return np.array([[proj0, 0.0], [proj1, 0.0]], dtype=np.float32)
     
-    # Normal PCA for n >= 3
     from sklearn.decomposition import PCA
     
-    # Check for degenerate case: near-zero variance
     variance = np.var(embeddings, axis=0).sum()
     if variance < 1e-8:
         np.random.seed(42)
@@ -120,7 +114,6 @@ def compute_semantic_uncertainty(responses: list[str]) -> dict:
     distance_matrix = 1.0 - sim_matrix
     np.fill_diagonal(distance_matrix, 0)
 
-    # Fixed: Config no longer has similarity_threshold, use a sensible default (0.7)
     threshold = 0.7
 
     clustering = AgglomerativeClustering(
@@ -145,7 +138,6 @@ def compute_semantic_uncertainty(responses: list[str]) -> dict:
     max_entropy = np.log(n) if n > 1 else 1.0
     normalized_entropy = semantic_entropy / max_entropy if max_entropy > 0 else 0.0
 
-    # Project to 2D for the scatter plot
     embeddings_np = embeddings.cpu().numpy()
     coords_2d = _project_2d(embeddings_np).tolist()
 
@@ -185,7 +177,6 @@ async def run_semantic_uncertainty_pipeline_async(prompt: str, use_local: bool =
         import asyncio
         loop = asyncio.get_running_loop()
         try:
-            # Run the synchronous ThreadPoolExecutor-based groq_generate_n_parallel in a thread
             responses = await loop.run_in_executor(None, groq_generate_n_parallel, prompt)
             return compute_semantic_uncertainty(responses)
         except Exception as e:

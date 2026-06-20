@@ -17,8 +17,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 with open(os.path.join(_ROOT, "config.yaml")) as f:
     CONFIG = yaml.safe_load(f)
 
-# DeBERTa cross-encoder NLI output order
-# cross-encoder/nli-deberta-v3-base: 0=contradiction, 1=entailment, 2=neutral
 _NLI_IDX = {"contradiction": 0, "entailment": 1, "neutral": 2}
 
 
@@ -52,7 +50,7 @@ def nli_score(premise: str, hypothesis: str) -> dict:
     ).to(device)
     
     with torch.no_grad():
-        logits = model(**inputs).logits  # [1, 3]
+        logits = model(**inputs).logits
     
     probs   = torch.softmax(logits[0], dim=-1).cpu().tolist()
     scores  = {label: probs[idx] for label, idx in _NLI_IDX.items()}
@@ -98,13 +96,12 @@ def _clean_response_for_nli(text: str) -> str:
     """
     if not text:
         return text
-    # Find the last sentence-ending punctuation
     last_end = max(
         text.rfind('.'),
         text.rfind('!'),
         text.rfind('?'),
     )
-    if last_end > len(text) * 0.5:  # only truncate if we keep >50% of text
+    if last_end > len(text) * 0.5:
         return text[:last_end + 1].strip()
     return text.strip()
 
@@ -119,11 +116,9 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
     """
     from models.groq_client import safe_groq_cross_check
     
-    # Step 1: Get Groq response safely
     groq_result = safe_groq_cross_check(prompt)
     
     if not groq_result["groq_available"]:
-        # Groq failed — return graceful fallback, NOT a fake contradiction score
         logger.warning(
             f"Groq unavailable — cross-check degraded. "
             f"Error: {groq_result.get('error', 'unknown')}"
@@ -131,12 +126,12 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
         return {
             "local_response":          local_response,
             "groq_response":           None,
-            "groq_available":          False,          # aggregator checks this
-            "groq_model":              CONFIG["models"]["groq"]["name"], # Adjusted for nested structure
+            "groq_available":          False,
+            "groq_model":              CONFIG["models"]["groq"]["name"],
             "error":                   groq_result.get("error"),
             "error_type":              groq_result.get("error_type", "unknown"),
             "nli":                     None,
-            "cross_check_uncertainty": 0.5,            # neutral, not penalizing
+            "cross_check_uncertainty": 0.5,
             "verdict":                 "unavailable",
             "symmetric_agreement":     0.0,
             "ab_detail":               {},
@@ -146,7 +141,6 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
     groq_response = groq_result["groq_response"]
     logger.info(f"Groq response: {groq_response[:80]}...")
     
-    # Step 2: Run bidirectional NLI
     clean_local = _clean_response_for_nli(local_response)
     clean_groq  = _clean_response_for_nli(groq_response)
     nli_result = symmetric_nli(clean_local, clean_groq)
@@ -161,7 +155,7 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
         "local_response":          local_response,
         "groq_response":           groq_response,
         "groq_available":          True,
-        "groq_model":              CONFIG["models"]["groq"]["name"], # Adjusted
+        "groq_model":              CONFIG["models"]["groq"]["name"],
         "error":                   None,
         "nli":                     nli_result,
         "cross_check_uncertainty": nli_result["cross_check_uncertainty"],
@@ -172,5 +166,4 @@ def run_cross_check(prompt: str, local_response: str) -> dict:
     }
 
 
-# Alias for backward compatibility — explainer.py and truthfulqa_eval.py import this name
 nli_score_sync = nli_score

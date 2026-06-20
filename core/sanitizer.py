@@ -8,19 +8,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Max characters allowed in a single prompt
 MAX_PROMPT_LENGTH = 10_000
 
-# Patterns that indicate potential prompt-injection or adversarial input
 _INJECTION_PATTERNS = [
     re.compile(r"(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)", re.I),
     re.compile(r"you\s+are\s+now\s+(DAN|in\s+developer\s+mode)", re.I),
-    re.compile(r"<\s*script\b", re.I),                       # HTML/XSS fragments
-    re.compile(r"javascript\s*:", re.I),                      # javascript: URIs
+    re.compile(r"<\s*script\b", re.I),
+    re.compile(r"javascript\s*:", re.I),
 ]
 
-# Collapse runs of repeated non-alphanumeric characters that can abuse tokenisers
-_EXCESSIVE_REPEAT = re.compile(r"([^\w\s])\1{9,}")           # 10+ copies
+_EXCESSIVE_REPEAT = re.compile(r"([^\w\s])\1{9,}")
 
 
 def sanitize_prompt(raw: str) -> str:
@@ -41,10 +38,8 @@ def sanitize_prompt(raw: str) -> str:
 
     text = raw[:MAX_PROMPT_LENGTH].strip()
 
-    # Collapse adversarial character repetition (e.g. "??????????????????????")
     text = _EXCESSIVE_REPEAT.sub(r"\1\1\1", text)
 
-    # Log injection attempts (don't silently swallow—security monitoring)
     for pat in _INJECTION_PATTERNS:
         if pat.search(text):
             logger.warning("Potential prompt-injection pattern detected in user input")

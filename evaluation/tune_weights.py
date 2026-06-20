@@ -39,7 +39,6 @@ def score_weights(results: list, w1: float, w2: float, w3: float) -> dict:
         np.clip(w1n * r["calibration"] + w2n * r["uncertainty"] + w3n * r["cross_check"], 0, 1)
         for r in labeled
     ]
-    # Label: 1 = hallucination (wrong answer)
     y_true = [0 if r["correctness"] else 1 for r in labeled]
 
     try:
@@ -90,10 +89,9 @@ def bayesian_search(results: list, n_calls: int = 60) -> dict:
         w1, w2 = x
         w3 = 1.0 - w1 - w2
         if w3 < 0.05:
-            return 1.0  # penalize invalid combinations
+            return 1.0
         return -score_weights(results, w1, w2, w3)["auroc"]
 
-    # Constraints: w1 + w2 <= 0.95 (so w3 >= 0.05)
     bounds = [(0.05, 0.90), (0.05, 0.90)]
     result = differential_evolution(
         objective,
@@ -122,7 +120,6 @@ def write_weights_to_config(best: dict):
     with open(CONFIG_PATH) as f:
         config = yaml.safe_load(f)
 
-    # Support both "aggregator" and "detection" key names
     weight_key = "aggregator" if "aggregator" in config else "detection"
     if weight_key not in config:
         config[weight_key] = {}
@@ -155,7 +152,6 @@ def run(input_file: str, method: str = "grid", write_back: bool = True):
         )
         return None
 
-    # Show baseline (current config weights)
     with open(CONFIG_PATH) as f:
         cfg = yaml.safe_load(f)
     wkey = "aggregator" if "aggregator" in cfg else "detection"
@@ -163,7 +159,6 @@ def run(input_file: str, method: str = "grid", write_back: bool = True):
     baseline = score_weights(results, cur_w.get("calibration", 0.20), cur_w.get("semantic_uncertainty", 0.50), cur_w.get("cross_check", 0.30))
     logger.info(f"Baseline AUROC (current weights): {baseline['auroc']:.4f}")
 
-    # Run optimization
     if method == "bayesian":
         best = bayesian_search(results)
     else:

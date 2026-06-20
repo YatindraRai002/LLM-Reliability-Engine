@@ -4,7 +4,6 @@ load_dotenv()
 
 print("--- DEBUG: Running fixed smoke_test.py ---")
 
-# Force the base_url to bypass any local Ollama/Proxy redirection
 client = groq.Groq(
     api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com"

@@ -27,10 +27,8 @@ def render_analytics_dashboard():
         st.info("No data available yet. Run some queries through the detector!")
         return
 
-    # Convert timestamp to datetime
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     
-    # 1. High-level metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Queries", len(df))
     
@@ -44,7 +42,6 @@ def render_analytics_dashboard():
     
     st.markdown("---")
     
-    # 2. Score distribution over time
     st.subheader("Hallucination Scores Over Time")
     fig_time = px.scatter(
         df, x="timestamp", y="score", color="label",
@@ -55,7 +52,6 @@ def render_analytics_dashboard():
     
     col1, col2 = st.columns(2)
     
-    # 3. Label Distribution
     with col1:
         st.subheader("Risk Distribution")
         fig_pie = px.pie(
@@ -65,7 +61,6 @@ def render_analytics_dashboard():
         )
         st.plotly_chart(fig_pie, use_container_width=True)
         
-    # 4. Signal Correlation
     with col2:
         st.subheader("Uncertainty vs Cross-Check")
         fig_scatter = px.scatter(
@@ -77,7 +72,6 @@ def render_analytics_dashboard():
 
     st.markdown("---")
     
-    # 5. Raw Data Table
     col_t1, col_t2 = st.columns([5, 1])
     with col_t1:
         st.subheader("Recent Queries")

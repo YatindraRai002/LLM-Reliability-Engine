@@ -9,19 +9,16 @@ def render_results(result_dict: dict):
     """
     result = result_dict["result"]
     
-    # ---- Risk Score Banner ----
     color_map = {"low": "🟢", "medium": "🟡", "high": "🔴"}
     st.markdown(f"### {color_map[result.label]} Hallucination Risk: `{result.score:.3f}` — {result.label.upper()}")
     st.info(result.explanation)
     
-    # ---- Three metric columns ----
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Final score", f"{result.score:.3f}")
     c2.metric("Calibration", f"{result.calibration_score:.3f}")
     c3.metric("Uncertainty", f"{result.uncertainty_score:.3f}")
     c4.metric("Cross-check", f"{result.cross_check_score:.3f}")
     
-    # ---- Score breakdown bar chart ----
     fig_scores = go.Figure(go.Bar(
         x=["Calibration", "Semantic uncertainty", "Cross-check"],
         y=[result.calibration_score, result.uncertainty_score, result.cross_check_score],
@@ -37,7 +34,6 @@ def render_results(result_dict: dict):
     )
     st.plotly_chart(fig_scores, use_container_width=True)
     
-    # ---- Tabs for detailed views ----
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Model responses", "Uncertainty landscape", "Token confidence", "Explanations", "System Calibration"
     ])
@@ -61,7 +57,6 @@ def render_response_comparison(result_dict: dict):
     cc = result_dict["cross_check_detail"]
     col_a, col_b = st.columns(2)
 
-    # Use 'open_model_response' if available, otherwise fall back to the correction detail draft
     local_response = cc.get("open_model_response") or result_dict.get("correction_detail", {}).get("draft", "Response not available")
 
     _tab_responses(result_dict["cross_check_detail"])
@@ -79,7 +74,6 @@ def _tab_responses(cc: dict):
         st.markdown(f"**{cc.get('groq_model', 'Groq')}**")
         
         if not cc.get("groq_available", True):
-            # Show helpful error, not just "not available"
             error = cc.get("error", "Unknown error")
             error_type = cc.get("error_type", "unknown")
             
@@ -102,7 +96,6 @@ def _tab_responses(cc: dict):
         groq_resp = cc.get("groq_response", "—")
         st.info(groq_resp)
     
-    # NLI verdict — only show when Groq was available
     if cc.get("groq_available", False):
         verdict = cc.get("verdict", "unknown")
         icon    = {"agree": "🟢", "neutral": "🟡", "contradict": "🔴"}.get(verdict, "⚪")
@@ -125,7 +118,6 @@ def render_uncertainty_landscape(sem_detail: dict):
 
     st.subheader("Semantic uncertainty landscape")
 
-    # ── Metrics row ──────────────────────────────────────────────────────
     c1, c2, c3 = st.columns(3)
     c1.metric(
         "Uncertainty score",
@@ -142,9 +134,7 @@ def render_uncertainty_landscape(sem_detail: dict):
         help="Higher = responses are more consistent"
     )
 
-    # ── Scatter plot ──────────────────────────────────────────────────────
-    # CORRECT key: embeddings_2d (NOT "embeddings")
-    embeddings_2d = sem_detail.get("embeddings_2d", [])   # ← .get() with default
+    embeddings_2d = sem_detail.get("embeddings_2d", [])
     cluster_labels = sem_detail.get("cluster_labels", [])
     responses = sem_detail.get("responses", [])
 
@@ -169,7 +159,6 @@ def render_uncertainty_landscape(sem_detail: dict):
             "Scattered = uncertain."
         )
 
-    # ── Sampled responses expander ────────────────────────────────────────
     if responses:
         with st.expander(
             f"All {len(responses)} sampled responses", expanded=False
@@ -220,7 +209,7 @@ def render_explanations(result_dict: dict):
       highlighted_html      → pre-rendered HTML string
       recommendations       → list of strings
     """
-    explanation = result_dict.get("explanation_detail")  # may be {} when explain=False
+    explanation = result_dict.get("explanation_detail")
 
     if not explanation or not isinstance(explanation, dict):
         st.info("Explanation data is not available for this result.")
@@ -230,7 +219,6 @@ def render_explanations(result_dict: dict):
         )
         return
 
-    # Check if explainer ran but produced empty output
     if not any([
         explanation.get("flagged_spans"),
         explanation.get("signal_pct"),
@@ -240,7 +228,6 @@ def render_explanations(result_dict: dict):
         st.info("No significant explanation signals found for this response.")
         return
 
-    # ── 1. Color-coded Token Response ────────────────────────────────
     st.subheader("🔍 Token-Level Confidence")
     if explanation.get("highlighted_html"):
         st.markdown(explanation["highlighted_html"], unsafe_allow_html=True)
@@ -254,7 +241,6 @@ def render_explanations(result_dict: dict):
 
     st.markdown("---")
 
-    # ── 2. Signal Contribution (SHAP-style) ──────────────────────────
     st.subheader("📊 Signal Contribution Analysis")
     if explanation.get("signal_pct"):
         signal = explanation["signal_pct"]
@@ -288,18 +274,15 @@ def render_explanations(result_dict: dict):
 
     st.markdown("---")
 
-    # ── 3. Contradicting Sentences ────────────────────────────────────
     st.subheader("🔴 Contradicting Sentences")
     contradicting = explanation.get("contradicting_sentences", [])
 
     if contradicting:
-        # Retrieve Groq oracle response for the diff panel
         groq_resp = (
             result_dict.get("cross_check_detail", {}).get("groq_response") or ""
         )
 
         for cs in contradicting:
-            # Left = flagged sentence  |  Right = oracle response
             col_local, col_groq = st.columns(2)
 
             with col_local:
@@ -314,7 +297,6 @@ def render_explanations(result_dict: dict):
                 )
 
             with col_groq:
-                # Pre-compute the ellipsis string
                 ellipsis_str = "…" if len(groq_resp) > 400 else ""
                 st.markdown(
                     f'<div style="background-color:#EAF3DE; border-left:4px solid #27500A; '
@@ -327,7 +309,6 @@ def render_explanations(result_dict: dict):
                 )
             st.write("")
     else:
-        # Explicit green 'no contradictions' state
         st.success(
             "✅ No contradicting sentences detected — "
             "the local response does not contradict the oracle on any sentence."
@@ -335,7 +316,6 @@ def render_explanations(result_dict: dict):
 
     st.markdown("---")
 
-    # ── 4. Recommendations ───────────────────────────────────────────
     st.subheader("💡 Recommendations")
     if explanation.get("recommendations"):
         for rec in explanation["recommendations"]:
@@ -382,7 +362,6 @@ def render_system_calibration():
         raw_scores = [r["hallucination_score"] for r in labeled]
         labels = [0 if r["correctness"] else 1 for r in labeled]
         
-        # We can also plot the calibrated scores if available, but for simplicity we plot raw vs empirical
         fig = plot_calibration(labels, raw_scores, title="Reliability Diagram (Raw Scores vs Emp. Correctness)")
         st.plotly_chart(fig, use_container_width=True)
         

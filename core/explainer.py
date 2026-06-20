@@ -25,7 +25,6 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# ── Config ───────────────────────────────────────────────────────────────────
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -33,7 +32,6 @@ try:
         _CONFIG = yaml.safe_load(_f) or {}
 except FileNotFoundError:
     _CONFIG = {}
-    # Logger not yet fully configured at module load; use basicConfig-safe call.
     logging.getLogger(__name__).warning(
         "explainer: config.yaml not found — all thresholds will use built-in defaults"
     )
@@ -44,8 +42,6 @@ _NLI_CFG    = _EXPL_CFG.get("sentence_nli", {})
 _SHAP_CFG   = _EXPL_CFG.get("signal_shap", {})
 _REC_CFG    = _EXPL_CFG.get("recommendations", {})
 
-
-# ── Data Structures ───────────────────────────────────────────────────────────
 
 @dataclass
 class FlaggedSpan:
@@ -99,26 +95,18 @@ class ExplanationResult:
         }
 
 
-# ── Color Palette ─────────────────────────────────────────────────────────────
-
-# Red: P < mean × 0.50 (critical — flagged span)
 COLOR_RED_BG    = "#FCEBEB"
 COLOR_RED_TEXT  = "#A32D2D"
 
-# Orange/Yellow: P between mean × 0.50 and mean × 0.75 (mild uncertainty)
 COLOR_ORANGE_BG   = "#FAEEDA"
 COLOR_ORANGE_TEXT = "#854F0B"
 
-# Green: P >= mean × 0.75 and above overall mean (confident)
 COLOR_GREEN_BG   = "#EAF3DE"
 COLOR_GREEN_TEXT = "#27500A"
 
-# Neutral: between mild and confident thresholds
 COLOR_NEUTRAL_BG   = "#F5F5F5"
 COLOR_NEUTRAL_TEXT = "#555555"
 
-
-# ── 1. Token Attribution ──────────────────────────────────────────────────────
 
 def get_flagged_spans(
     response: str,
@@ -211,8 +199,6 @@ def render_highlighted_response(
     return f'<div style="line-height:1.8; padding:8px;">{" ".join(html_parts)}</div>'
 
 
-# ── 2. Sentence-Level NLI Scoring ────────────────────────────────────────────
-
 def find_contradicting_sentences(
     local_response: str,
     groq_response: Optional[str],
@@ -251,7 +237,7 @@ def find_contradicting_sentences(
         return []
 
     try:
-        from core.cross_check import nli_score_sync  # reuses already-loaded DeBERTa
+        from core.cross_check import nli_score_sync
     except ImportError:
         logger.error("find_contradicting_sentences: could not import nli_score_sync")
         return []
@@ -259,7 +245,7 @@ def find_contradicting_sentences(
     contradictions: List[ContradictingSentence] = []
     for sentence in sentences:
         sentence = sentence.strip()
-        if len(sentence) < 10:  # skip very short fragments
+        if len(sentence) < 10:
             continue
         try:
             scores = nli_score_sync(sentence, groq_response)
@@ -280,8 +266,6 @@ def find_contradicting_sentences(
 
     return contradictions
 
-
-# ── 3. Signal SHAP (Ablation-Based) ──────────────────────────────────────────
 
 def compute_signal_shap(
     cal: float,
@@ -324,10 +308,8 @@ def compute_signal_shap(
     w2 = w.get("semantic_uncertainty", 0.50)
     w3 = w.get("cross_check",        0.30)
 
-    # Full weighted score
     full_score = w1 * cal + w2 * unc + w3 * cc
 
-    # Ablate each signal: set its weight to 0, renormalise others, recompute
     def _score_without(skip: str) -> float:
         sw = {k: (0.0 if k == skip else v) for k, v in w.items()}
         total = sum(sw.values())
@@ -345,7 +327,6 @@ def compute_signal_shap(
     total_delta = delta_cal + delta_unc + delta_cc
 
     if total_delta == 0:
-        # All signals at same level — equal split
         return {"calibration": 33.3, "semantic_uncertainty": 33.3, "cross_check": 33.4}
 
     return {
@@ -354,8 +335,6 @@ def compute_signal_shap(
         "cross_check":          round(100 * delta_cc  / total_delta, 1),
     }
 
-
-# ── Full Explanation Generator ────────────────────────────────────────────────
 
 def generate_explanation(
     response: str,
@@ -392,7 +371,6 @@ def generate_explanation(
         logger.info("generate_explanation: explanation disabled in config — returning empty result")
         return ExplanationResult()
 
-    # 1. Token attribution
     if _TOKEN_CFG.get("enabled", True):
         highlighted_html = render_highlighted_response(response, token_probs, tokenizer)
         flagged = get_flagged_spans(response, token_probs, tokenizer)
@@ -400,7 +378,6 @@ def generate_explanation(
         highlighted_html = ""
         flagged = []
 
-    # 2. Sentence-level NLI
     if _NLI_CFG.get("enabled", True):
         try:
             contradictions = find_contradicting_sentences(local_response, groq_response)
@@ -410,10 +387,8 @@ def generate_explanation(
     else:
         contradictions = []
 
-    # 3. Signal SHAP
     signal_pct = compute_signal_shap(cal, unc, cc, weights)
 
-    # 4. Recommendations
     recommendations = _generate_recommendations(
         flagged, contradictions, signal_pct, groq_response
     )
@@ -426,8 +401,6 @@ def generate_explanation(
         recommendations=recommendations,
     )
 
-
-# ── Internal Helpers ──────────────────────────────────────────────────────────
 
 def _tokenize(response: str, tokenizer) -> List[str]:
     """Split response into tokens using tokenizer if available, else whitespace."""
@@ -483,9 +456,8 @@ def _split_sentences(text: str) -> List[str]:
     Falls back to a simple regex split if NLTK is unavailable.
     """
     try:
-        import nltk  # lazy import — do not load at module level
+        import nltk
 
-        # Ensure punkt tokenizer data is available (silent on subsequent calls)
         try:
             nltk.data.find("tokenizers/punkt_tab")
         except LookupError:
@@ -531,31 +503,26 @@ def _generate_recommendations(
     cal_pct = signal_pct.get("calibration",          0.0)
     sem_pct = signal_pct.get("semantic_uncertainty",  0.0)
 
-    # Calibration dominant
     if cal_pct > (cal_threshold * 100):
         recs.append(
             "Model showed low token confidence — it may be guessing on this topic."
         )
 
-    # Sentence-level contradictions
     n_contra = len(contradictions)
     if n_contra > 0:
         recs.append(
             f"The response contradicts a larger oracle model on {n_contra} sentence(s)."
         )
     elif groq_response is None:
-        # Groq degraded — note the omission
         recs.append(
             "Cross-model sentence comparison was skipped (Groq oracle unavailable)."
         )
 
-    # Semantic uncertainty dominant
     if sem_pct > (sem_threshold * 100):
         recs.append(
             "Responses to this question were semantically inconsistent across multiple samples."
         )
 
-    # Always append
     recs.append("Consider verifying with a primary source.")
 
     return recs

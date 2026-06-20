@@ -7,7 +7,6 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Try importing redis, gracefully fallback if not installed
 try:
     import redis
     REDIS_AVAILABLE = True
@@ -27,7 +26,6 @@ def get_redis_client():
         redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
         try:
             _redis_client = redis.from_url(redis_url, decode_responses=True, socket_connect_timeout=1.0, socket_timeout=1.0)
-            # Ping to verify connection
             _redis_client.ping()
         except Exception as e:
             logger.warning(f"Failed to connect to Redis: {e}. Falling back to SQLite only.")
@@ -58,7 +56,6 @@ def _init_sqlite():
     except Exception as e:
         logger.error(f"Failed to initialize SQLite db: {e}")
 
-# Initialize SQLite on module load
 _init_sqlite()
 
 
@@ -92,7 +89,6 @@ def set_cached(prompt: str, weights: dict = None, result_dict: dict = None, ttl:
 
     key = _prompt_key(prompt, weights)
 
-    # 1. Save to Redis
     client = get_redis_client()
     if client:
         try:
@@ -100,19 +96,16 @@ def set_cached(prompt: str, weights: dict = None, result_dict: dict = None, ttl:
         except Exception as e:
             logger.warning(f"Redis set failed: {e}")
 
-    # 2. Persist to SQLite
     _persist_to_sqlite(key, prompt, weights, result_dict)
 
 
 def _persist_to_sqlite(key: str, prompt: str, weights: dict, result_dict: dict):
     """Save result metadata to SQLite for analytics."""
     try:
-        # Extract fields from result_dict
         res = result_dict.get("result")
         if not res:
             return
 
-        # Handle HallucinationResult dataclass or dict (if loaded from cache)
         if hasattr(res, "score"):
             score = res.score
             label = res.label

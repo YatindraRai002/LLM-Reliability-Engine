@@ -18,8 +18,6 @@ from evaluation.tune_weights import tune_weights
 from evaluation.eval_report import generate_report
 
 
-# ── Checkpoint Resume Tests ──────────────────────────────────────────
-
 class TestCheckpointResume:
     def test_load_empty_checkpoint(self, tmp_path):
         """Loading a non-existent checkpoint returns empty list."""
@@ -53,8 +51,6 @@ class TestCheckpointResume:
         assert len(loaded) == 2
 
 
-# ── Metrics Computation Tests ────────────────────────────────────────
-
 class TestMetrics:
     def test_print_metrics_with_valid_data(self, capsys):
         """Metrics print without errors when data has both classes."""
@@ -68,7 +64,6 @@ class TestMetrics:
             {"hallucination_score": 0.2, "correctness": True, "risk_label": "low",
              "category": "Law", "elapsed_seconds": 2.5},
         ]
-        # Should not raise
         print_metrics(results)
         captured = capsys.readouterr()
         assert "AUROC" in captured.out
@@ -81,7 +76,6 @@ class TestMetrics:
             {"hallucination_score": 0.3, "correctness": True, "risk_label": "low",
              "category": "Health", "elapsed_seconds": 2.0},
         ]
-        # Should not raise
         print_metrics(results)
         captured = capsys.readouterr()
         assert "one class" in captured.out.lower() or "EVALUATION" in captured.out
@@ -100,8 +94,6 @@ class TestMetrics:
         captured = capsys.readouterr()
         assert "High Risk Flagged" in captured.out
 
-
-# ── Eval Report Tests ────────────────────────────────────────────────
 
 class TestEvalReport:
     def test_generate_report_with_data(self, tmp_path):
@@ -144,8 +136,6 @@ class TestEvalReport:
         assert report == {}
 
 
-# ── Weight Tuner Tests ───────────────────────────────────────────────
-
 class TestTuneWeights:
     def test_tune_with_valid_data(self, tmp_path):
         """Weight tuner finds valid weights from labeled results."""
@@ -172,7 +162,7 @@ class TestTuneWeights:
         assert "semantic_uncertainty" in weights
         assert "cross_check" in weights
         total = weights["calibration"] + weights["semantic_uncertainty"] + weights["cross_check"]
-        assert abs(total - 1.0) < 0.01  # Weights should sum to ~1.0
+        assert abs(total - 1.0) < 0.01
 
     def test_tune_missing_file(self, tmp_path):
         """Tuner handles missing results file gracefully."""

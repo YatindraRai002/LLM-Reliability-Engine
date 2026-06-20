@@ -12,8 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Expose ports for both Streamlit and FastAPI
 EXPOSE 8501 8000
 
-# Default command runs Streamlit
 CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0"]

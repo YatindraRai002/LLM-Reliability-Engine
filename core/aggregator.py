@@ -32,8 +32,8 @@ class HallucinationResult:
     weights_used:       dict
     thresholds_used:    dict
     n_samples_used:     int
-    groq_available:     bool    # NEW — tells UI whether cross-check ran
-    mode:               str     # "full" or "2-signal"
+    groq_available:     bool
+    mode:               str
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -42,7 +42,7 @@ class HallucinationResult:
 def aggregate_scores(
     calibration_score:  float,
     uncertainty_score:  float,
-    cross_check_result: dict,           # full cc dict, not just a float
+    cross_check_result: dict,
     weights:            Optional[dict] = None,
     n_samples:          int = None,
 ) -> HallucinationResult:
@@ -62,34 +62,27 @@ def aggregate_scores(
     verdict        = cross_check_result.get("verdict", "neutral")
     cc             = float(np.clip(cc_raw, 0.0, 1.0))
     
-    # Load base weights from config (spec: calibration=0.20, semantic_uncertainty=0.50, cross_check=0.30)
     w = dict(weights or CONFIG["detection"]["weights"])
-    w1 = w.get("calibration",          0.20)  # spec default
-    w2 = w.get("semantic_uncertainty",  0.50)  # spec default — was wrongly 0.30
-    w3 = w.get("cross_check",           0.30)  # spec default — was wrongly 0.45
+    w1 = w.get("calibration",          0.20)
+    w2 = w.get("semantic_uncertainty",  0.50)
+    w3 = w.get("cross_check",           0.30)
     
     mode = "full"
     
     if not groq_available:
-        # 2-signal mode: redistribute cross-check weight
-        # Split it 40/60 to uncertainty/calibration (uncertainty is more reliable)
         w1 = w1 + w3 * 0.40
         w2 = w2 + w3 * 0.60
         w3 = 0.0
-        cc = 0.5   # neutral
+        cc = 0.5
         mode = "2-signal"
         logger.info("Aggregator: running in 2-signal mode (Groq unavailable)")
     
-    # Normalize weights
     total = w1 + w2 + w3
     if total > 0:
         w1, w2, w3 = w1/total, w2/total, w3/total
     
-    # Base weighted score
     score = w1 * cal + w2 * unc + w3 * cc
     
-    # Hard NLI override — ONLY when Groq actually ran AND returned contradiction
-    # NEVER fire this when Groq failed — that was the source of false 1.0 scores
     if groq_available and verdict == "contradict":
         pre_override = score
         score = max(score, 0.85)
@@ -100,7 +93,6 @@ def aggregate_scores(
     
     score = float(np.clip(score, 0.0, 1.0))
     
-    # Risk label (using detection/thresholds from config.yaml)
     thr = CONFIG["detection"]["thresholds"]
     if score < thr["low"]:
         label = "low"
@@ -120,7 +112,7 @@ def aggregate_scores(
         cross_check_score = round(cc,  3),
         weights_used      = {
             "calibration":          round(w1, 3),
-            "semantic_uncertainty": round(w2, 3),  # unified — was 'uncertainty'
+            "semantic_uncertainty": round(w2, 3),
             "cross_check":          round(w3, 3),
         },
         thresholds_used   = thr,
@@ -149,7 +141,6 @@ def _explain(label, cal, unc, cc, n, groq_available, verdict) -> str:
             f"Strongest signal: {dominant[0]} ({dominant[1]:.2f}). "
             "Verify key claims independently."
         )
-    # high
     triggers = []
     if cal > 0.55:  triggers.append(f"low token confidence ({cal:.2f})")
     if unc > 0.55:  triggers.append(f"high response variance ({unc:.2f})")
@@ -172,9 +163,6 @@ def run_full_pipeline(
     weights: Optional[dict] = None,
     explain: bool = True,
 ) -> dict:
-    # NOTE: `explain=False` sets explanation_detail={} in the returned dict.
-    # Downstream consumers (UI, tests, analytics) must use .get() to access
-    # explanation fields — never assume the key contains a populated dict.
     from core.calibration          import get_generation_with_scores, compute_calibration_score
     from core.semantic_uncertainty import run_semantic_uncertainty_pipeline
     from core.cross_check          import run_cross_check
@@ -183,7 +171,6 @@ def run_full_pipeline(
     timings = {}
     logger.info(f"=== Pipeline: '{prompt[:60]}' ===")
 
-    # Step 1: Calibration
     t = time.time()
     logger.info("Step 1/3: Calibration...")
     try:
@@ -197,7 +184,6 @@ def run_full_pipeline(
     timings["calibration"] = round(time.time()-t, 2)
     logger.info(f"  cal={cal_score:.3f} ({timings['calibration']}s)")
 
-    # Run Step 2 (Semantic Uncertainty) and Step 3 (Cross-check) in parallel
     from concurrent.futures import ThreadPoolExecutor
     t23 = time.time()
     
@@ -205,7 +191,6 @@ def run_full_pipeline(
         future_sem = executor.submit(run_semantic_uncertainty_pipeline, prompt, use_local_for_uncertainty)
         future_cc = executor.submit(run_cross_check, prompt, cal_detail.get("response", ""))
         
-        # Step 2: Semantic uncertainty processing
         logger.info("Step 2/3: Semantic uncertainty...")
         try:
             sem_detail = future_sem.result()
@@ -225,7 +210,6 @@ def run_full_pipeline(
         timings["semantic_uncertainty"] = round(time.time()-t23, 2)
         logger.info(f"  unc={sem_score:.3f} ({timings['semantic_uncertainty']}s)")
 
-        # Step 3: Cross-check processing
         logger.info("Step 3/3: Cross-check...")
         try:
             cc_detail = future_cc.result()
@@ -246,7 +230,6 @@ def run_full_pipeline(
         timings["cross_check"] = round(time.time()-t23, 2)
         logger.info(f"  cc={cc_score:.3f} ({timings['cross_check']}s)")
 
-    # Step 4: Aggregate
     result = aggregate_scores(
         cal_score, sem_score, cc_detail,
         weights=weights,
@@ -255,11 +238,6 @@ def run_full_pipeline(
     timings["total"] = round(time.time()-t0, 2)
     logger.info(f"=== Done: {result.score:.3f} ({result.label}) mode={result.mode} ===")
 
-    # ── Step 5: Explanation (Phase B) ──────────────────────────────────────
-    # Gated by the `explain` parameter — set False in evaluation harness or
-    # when the UI "Show explanation" checkbox is unchecked to avoid NLI overhead.
-    # explanation_detail is always present in the return dict; it may be {} when
-    # explain=False. All callers must use result_dict.get("explanation_detail", {}).
     if explain:
         from core.explainer import generate_explanation
         from dataclasses import asdict
@@ -281,7 +259,7 @@ def run_full_pipeline(
         explanation_detail = explanation_obj.to_dict()
     else:
         logger.info("run_full_pipeline: explain=False — skipping explanation engine")
-        explanation_detail = {}  # downstream: always use .get() on this
+        explanation_detail = {}
 
     return {
         "prompt":             prompt,

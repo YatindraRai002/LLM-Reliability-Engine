@@ -15,10 +15,8 @@ def check_auth() -> bool:
     Returns True if the user is authenticated.
     Call at the top of app.py to protect the page.
     """
-    # If DASHBOARD_PASSWORD is not set, authentication is bypassed
     if _DASHBOARD_PASSWORD is None:
         return True
-    # Load configuration
     try:
         with open('config.yaml', 'r', encoding='utf-8') as file:
             config = yaml.load(file, Loader=SafeLoader)
@@ -41,7 +39,6 @@ def check_auth() -> bool:
     name, authentication_status, username = authenticator.login('Login to LLM Detector', 'main')
 
     if authentication_status:
-        # Display welcome message and logout button
         st.sidebar.markdown(f"**Account**: {name}")
         authenticator.logout('Logout', 'sidebar')
         return True

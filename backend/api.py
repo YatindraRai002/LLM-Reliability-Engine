@@ -10,7 +10,6 @@ import os
 import time
 import uuid
 
-# Ensure the root directory is in the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.aggregator import run_full_pipeline
@@ -25,13 +24,11 @@ from backend.metrics import (
     ACTIVE_REQUESTS,
 )
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LLM Lie Detector API", description="Backend API for running the detection pipeline.")
 
-# Metrics Middleware to track all requests and latencies
 @app.middleware("http")
 async def add_metrics_middleware(request: Request, call_next):
     path = request.url.path
@@ -53,7 +50,6 @@ async def add_metrics_middleware(request: Request, call_next):
     finally:
         ACTIVE_REQUESTS.dec()
 
-# CORS — allow Next.js frontend from any origin in dev, restrict in prod
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 
 app.add_middleware(
@@ -64,7 +60,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SQLite path
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SQLITE_DB_PATH = os.path.join(_ROOT, "results.db")
 
@@ -72,8 +67,6 @@ SQLITE_DB_PATH = os.path.join(_ROOT, "results.db")
 class AnalyzeRequest(BaseModel):
     prompt: str
     use_local_for_uncertainty: Optional[bool] = False
-    # explain=False skips the Phase B explanation engine for speed.
-    # Downstream consumers must use result_dict.get("explanation_detail", {}).
     explain: Optional[bool] = True
 
 jobs = {}
@@ -88,7 +81,6 @@ def get_metrics():
 def background_analyze(job_id: str, request: AnalyzeRequest):
     logger.info(f"Background processing started for job {job_id}, prompt: {request.prompt}")
     try:
-        # Check cache hit
         cached_result = get_cached(request.prompt)
         if cached_result:
             CACHE_HIT_COUNT.labels(status="hit").inc()
@@ -111,13 +103,10 @@ def background_analyze(job_id: str, request: AnalyzeRequest):
             explain=request.explain if request.explain is not None else True,
         )
 
-        # Persist to SQLite for analytics dashboard
         set_cached(request.prompt, None, result_dict)
 
-        # Record pipeline metrics
         res = result_dict.get("result")
         if res:
-            # Handle both object and dict (to_dict() hasn't run yet)
             score = getattr(res, "score", None)
             if score is None and isinstance(res, dict):
                 score = res.get("score")
@@ -131,7 +120,6 @@ def background_analyze(job_id: str, request: AnalyzeRequest):
             if label is not None:
                 RISK_LABEL_COUNT.labels(label=label).inc()
 
-        # Convert HallucinationResult dataclass to dict so FastAPI can serialize it
         if "result" in result_dict and hasattr(result_dict["result"], "to_dict"):
             result_dict["result"] = result_dict["result"].to_dict()
 
@@ -152,7 +140,6 @@ def get_result(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     return jobs[job_id]
-
 
 
 @app.get("/api/history")

@@ -38,7 +38,6 @@ def generate_report(
         logger.error("No results to report on.")
         return {}
 
-    # ── Overall Stats ────────────────────────────────────────────────
     labeled = [r for r in results if r.get("correctness") is not None]
     scores = [r["hallucination_score"] for r in labeled]
     labels = [0 if r["correctness"] else 1 for r in labeled]
@@ -56,7 +55,6 @@ def generate_report(
         "risk_distribution": {},
     }
 
-    # ── AUROC & Precision/Recall ─────────────────────────────────────
     if len(set(labels)) >= 2:
         auroc = roc_auc_score(labels, scores)
         ap = average_precision_score(labels, scores)
@@ -78,7 +76,6 @@ def generate_report(
             "note": "Insufficient class diversity for AUROC computation",
         }
 
-    # ── Latency Percentiles ──────────────────────────────────────────
     latencies = [r["elapsed_seconds"] for r in results if "elapsed_seconds" in r]
     if latencies:
         report["latency"] = {
@@ -90,7 +87,6 @@ def generate_report(
             "max": round(float(np.max(latencies)), 2),
         }
 
-    # ── Risk Distribution ────────────────────────────────────────────
     risk_labels = [r.get("risk_label", "unknown") for r in results]
     report["risk_distribution"] = {
         "low": risk_labels.count("low"),
@@ -98,7 +94,6 @@ def generate_report(
         "high": risk_labels.count("high"),
     }
 
-    # ── Per-Category Breakdown ───────────────────────────────────────
     categories = set(r.get("category", "unknown") for r in labeled)
     for cat in sorted(categories):
         cat_results = [r for r in labeled if r.get("category") == cat]
@@ -118,7 +113,6 @@ def generate_report(
 
         report["per_category"][cat] = cat_entry
 
-    # ── Save Report ──────────────────────────────────────────────────
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
     logger.info(f"Report saved to {output_path}")

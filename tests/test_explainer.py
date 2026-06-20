@@ -28,8 +28,6 @@ from core.explainer import (
 )
 
 
-# ── Token Attribution Tests ───────────────────────────────────────────────────
-
 class TestTokenHighlighting:
     def test_empty_probs_returns_plain(self):
         """Empty token probs should return plain HTML paragraph."""
@@ -41,7 +39,7 @@ class TestTokenHighlighting:
         """Each token should get a colored span."""
         html = render_highlighted_response("The cat sat", [0.9, 0.2, 0.6])
         assert "<span" in html
-        assert "P=" in html  # title attribute
+        assert "P=" in html
 
     def test_html_escaping(self):
         """HTML special characters should be escaped in rendered output."""
@@ -69,8 +67,6 @@ class TestFlaggedSpans:
 
     def test_flags_multiple_low_confidence_tokens(self):
         """Multiple tokens below threshold should all be flagged."""
-        # mean([0.9, 0.05, 0.05]) = 0.333, cutoff = 0.167
-        # 0.05 < 0.167, so indices 1 and 2 are flagged
         spans = get_flagged_spans("a b c", [0.9, 0.05, 0.05])
         assert len(spans) == 2
         assert spans[0].position == 1
@@ -78,8 +74,6 @@ class TestFlaggedSpans:
 
     def test_no_flags_for_confident_tokens(self):
         """All tokens at similar high probability should not be flagged."""
-        # mean([0.9, 0.85]) = 0.875, cutoff = 0.4375
-        # both probs are above cutoff
         spans = get_flagged_spans("Hello world", [0.9, 0.85])
         assert len(spans) == 0
 
@@ -90,7 +84,6 @@ class TestFlaggedSpans:
 
     def test_reason_is_always_low_confidence(self):
         """reason field must always be 'low_confidence'."""
-        # mean = 0.5, cutoff = 0.25; first token (0.1) is flagged
         spans = get_flagged_spans("a b", [0.1, 0.9])
         assert len(spans) >= 1
         for span in spans:
@@ -98,7 +91,6 @@ class TestFlaggedSpans:
 
     def test_field_names_match_spec(self):
         """FlaggedSpan must use Phase B spec field names."""
-        # mean([0.1, 0.9]) = 0.5, cutoff = 0.25
         spans = get_flagged_spans("a b", [0.1, 0.9])
         assert len(spans) >= 1
         span = spans[0]
@@ -107,8 +99,6 @@ class TestFlaggedSpans:
         assert hasattr(span, "probability")
         assert hasattr(span, "reason")
 
-
-# ── Signal SHAP Tests ─────────────────────────────────────────────────────────
 
 class TestSignalShap:
     def test_signal_shap_sums_to_100(self):
@@ -152,8 +142,6 @@ class TestSignalShap:
         assert len(pct) == 3
 
 
-# ── Sentence NLI Tests ────────────────────────────────────────────────────────
-
 class TestSentenceNLI:
     def test_sentence_nli_catches_contradiction(self):
         """Real find_contradicting_sentences() should return a ContradictingSentence
@@ -175,19 +163,17 @@ class TestSentenceNLI:
             "agreement":     -0.80,
         }
 
-        # Build a minimal mock module that exposes nli_score_sync
         mock_cc = ModuleType("core.cross_check")
-        mock_cc.nli_score_sync = lambda premise, hypothesis: mock_scores  # type: ignore
+        mock_cc.nli_score_sync = lambda premise, hypothesis: mock_scores
 
         original = sys.modules.get("core.cross_check")
         sys.modules["core.cross_check"] = mock_cc
         try:
             result = find_contradicting_sentences(
-                "The earth is flat.",     # local_response — one clear sentence
-                "The earth is a sphere.",  # groq_response
+                "The earth is flat.",
+                "The earth is a sphere.",
             )
         finally:
-            # Always restore — don't pollute other tests
             if original is None:
                 sys.modules.pop("core.cross_check", None)
             else:
@@ -224,8 +210,6 @@ class TestSentenceNLI:
         assert hasattr(cs, "label")
         assert hasattr(cs, "entailment_score")
 
-
-# ── ExplanationResult Tests ───────────────────────────────────────────────────
 
 class TestExplanationResult:
     def test_default_fields(self):
@@ -279,13 +263,11 @@ class TestExplanationResult:
         )
         d = result.to_dict()
 
-        # Must be JSON-serialisable
         try:
             serialised = json.dumps(d)
         except (TypeError, ValueError) as exc:
             pytest.fail(f"to_dict() result is not JSON-serialisable: {exc}")
 
-        # Round-trip check: keys must survive serialisation
         parsed = json.loads(serialised)
         assert "flagged_spans" in parsed
         assert "contradicting_sentences" in parsed
@@ -293,7 +275,6 @@ class TestExplanationResult:
         assert "highlighted_html" in parsed
         assert "recommendations" in parsed
 
-        # Spot-check nested field names match Phase B spec
         assert parsed["flagged_spans"][0]["token"] == "guessing"
         assert parsed["flagged_spans"][0]["position"] == 3
         assert parsed["flagged_spans"][0]["probability"] == 0.12
@@ -302,28 +283,22 @@ class TestExplanationResult:
         assert parsed["contradicting_sentences"][0]["label"] == "CONTRADICTION"
 
 
-# ── Helper Utility Tests ──────────────────────────────────────────────────────
-
 class TestHelpers:
     def test_color_for_critical_prob(self):
-        # prob=0.1, mean=0.5, low_mult=0.5 → cutoff=0.25 → red
         bg, fg = _get_color_for_prob(0.1, 0.5, 0.5, 0.75)
-        assert "FC" in bg.upper()  # COLOR_RED_BG starts with #FC
+        assert "FC" in bg.upper()
 
     def test_color_for_mild_prob(self):
-        # prob=0.3, mean=0.5, cutoffs: low=0.25, mild=0.375 → orange
         bg, fg = _get_color_for_prob(0.3, 0.5, 0.5, 0.75)
-        assert "FA" in bg.upper()  # COLOR_ORANGE_BG starts with #FA
+        assert "FA" in bg.upper()
 
     def test_color_for_confident_prob(self):
-        # prob=0.8, mean=0.5 → above mean → green
         bg, fg = _get_color_for_prob(0.8, 0.5, 0.5, 0.75)
-        assert "EA" in bg.upper()  # COLOR_GREEN_BG starts with #EA
+        assert "EA" in bg.upper()
 
     def test_color_for_neutral_prob(self):
-        # prob=0.45, mean=0.5, mild_cutoff=0.375 → between mild and mean → neutral
         bg, fg = _get_color_for_prob(0.45, 0.5, 0.5, 0.75)
-        assert "F5" in bg.upper()  # COLOR_NEUTRAL_BG starts with #F5
+        assert "F5" in bg.upper()
 
     def test_split_sentences_basic(self):
         text = "Hello world. This is a test! How are you? Fine."

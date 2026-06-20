@@ -33,7 +33,6 @@ def fit_calibrator(results_path: str = "eval_results.json", output_path: str = "
     calibrator.save(output_path)
     logger.info(f"Fitted calibrator on {len(raw_scores)} samples and saved to {output_path}")
 
-    # Compute ECE before and after
     old_ece = compute_ece(raw_scores, labels)
     new_scores = [calibrator.transform(s) for s in raw_scores]
     new_ece = compute_ece(new_scores, labels)

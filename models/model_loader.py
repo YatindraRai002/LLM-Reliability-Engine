@@ -10,8 +10,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FIX: Find config.yaml relative to this file's directory (models/)
-# The config.yaml is one level up from the 'models' folder.
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CURRENT_DIR, "..", "config.yaml")
 
@@ -56,7 +54,7 @@ def get_local_model():
             model_name,
             quantization_config=bnb_config,
             device_map="auto" if use_4bit else None,
-            dtype=dtype,               # torch_dtype renamed to dtype in transformers 5.x
+            dtype=dtype,
             trust_remote_code=True
         )
         if not use_4bit:
@@ -98,7 +96,6 @@ def get_system_info() -> dict:
         info["gpu"] = "CPU-only"
         info["vram_usage"] = "N/A"
 
-    # Check which models are loaded in lru_cache
     if get_local_model.cache_info().currsize > 0:
         info["models_loaded"].append(CONFIG["models"]["local"]["name"])
     if get_embedding_model.cache_info().currsize > 0:
@@ -108,5 +105,4 @@ def get_system_info() -> dict:
 
     return info
 
-# Deprecated alias, remove after full audit
 get_open_model = get_local_model

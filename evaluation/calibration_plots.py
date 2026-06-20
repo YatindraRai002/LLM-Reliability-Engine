@@ -31,7 +31,6 @@ def plot_calibration(
 
     fig = go.Figure()
 
-    # Perfectly calibrated reference line
     fig.add_trace(go.Scatter(
         x=[0, 1], y=[0, 1],
         mode='lines',
@@ -39,7 +38,6 @@ def plot_calibration(
         line=dict(color='gray', dash='dash')
     ))
 
-    # Empirical calibration curve
     fig.add_trace(go.Scatter(
         x=mean_predicted_value,
         y=fraction_of_positives,

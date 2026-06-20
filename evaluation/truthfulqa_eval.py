@@ -17,10 +17,6 @@ with open(os.path.join(_ROOT, "config.yaml")) as f:
     CONFIG = yaml.safe_load(f)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataset loaders
-# ─────────────────────────────────────────────────────────────────────────────
-
 def load_truthfulqa(n: int, categories: list = None) -> list:
     from datasets import load_dataset
     logger.info("Loading TruthfulQA dataset...")
@@ -69,10 +65,6 @@ def load_halueval(n: int) -> list:
         return load_truthfulqa(n)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Correctness heuristic (no LLM judge — fast approximation)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def approx_correctness(response: str, correct: list, incorrect: list) -> bool | None:
     """
     Heuristic correctness check using keyword matching.
@@ -100,10 +92,6 @@ def approx_correctness(response: str, correct: list, incorrect: list) -> bool | 
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Metrics
-# ─────────────────────────────────────────────────────────────────────────────
-
 def compute_metrics(results: list) -> dict:
     from sklearn.metrics import (
         roc_auc_score,
@@ -118,7 +106,6 @@ def compute_metrics(results: list) -> dict:
         logger.warning("Not enough labeled examples for reliable metrics")
         return {"auroc": None, "avg_precision": None, "n_labeled": len(labeled)}
 
-    # Label: 1 = hallucination (wrong answer), 0 = correct
     y_true = [0 if r["correctness"] else 1 for r in labeled]
     y_score = [r["score"] for r in labeled]
 
@@ -132,7 +119,6 @@ def compute_metrics(results: list) -> dict:
     except Exception:
         ap = None
 
-    # Optimal threshold (maximizes F1)
     optimal_threshold = 0.5
     best_f1 = 0.0
     try:
@@ -144,7 +130,6 @@ def compute_metrics(results: list) -> dict:
     except Exception:
         pass
 
-    # At optimal threshold
     preds = [1 if s >= optimal_threshold else 0 for s in y_score]
     tp = sum(1 for p, t in zip(preds, y_true) if p == 1 and t == 1)
     fp = sum(1 for p, t in zip(preds, y_true) if p == 1 and t == 0)
@@ -152,7 +137,6 @@ def compute_metrics(results: list) -> dict:
     precision = tp / (tp + fp + 1e-9)
     recall = tp / (tp + fn + 1e-9)
 
-    # Category breakdown
     category_stats = {}
     for r in results:
         cat = r.get("category", "unknown")
@@ -167,7 +151,6 @@ def compute_metrics(results: list) -> dict:
         category_stats[cat]["mean_score"] = round(float(np.mean(s)), 3)
         del category_stats[cat]["scores"]
 
-    # Latency percentiles
     latencies = [r["elapsed"] for r in results]
     lat_p50 = float(np.percentile(latencies, 50))
     lat_p95 = float(np.percentile(latencies, 95))
@@ -193,10 +176,6 @@ def compute_metrics(results: list) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main evaluation loop
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run(
     n: int = 100,
     dataset: str = "truthfulqa",
@@ -206,14 +185,12 @@ def run(
 ) -> dict:
     from core.aggregator import run_full_pipeline
 
-    # Load examples
     if dataset == "halueval":
         examples = load_halueval(n)
     else:
         cats = CONFIG.get("evaluation", {}).get("target_categories", None)
         examples = load_truthfulqa(n, cats)
 
-    # Resume from partial results
     done_ids = set()
     results = []
     errors = []
@@ -255,12 +232,10 @@ def run(
                 "response":     resp,
                 "correctness":  correctness,
                 
-                # New keys
                 "score":        out["result"].score,
                 "label":        out["result"].label,
                 "elapsed":      elapsed,
                 
-                # Compatibility keys
                 "hallucination_score": out["result"].score,
                 "risk_label":          out["result"].label,
                 "elapsed_seconds":      elapsed,
@@ -277,7 +252,6 @@ def run(
             logger.error(f"Error on [{ex['id']}]: {e}")
             errors.append({"id": ex["id"], "question": ex["question"], "error": str(e)})
 
-        # Checkpoint every 10 examples
         if (len(results) + len(errors)) % 10 == 0:
             _save(out_file, results, errors, {}, dataset, n)
 
@@ -286,7 +260,6 @@ def run(
 
     data = _save(out_file, results, errors, metrics, dataset, n, total_time)
 
-    # Print summary
     print(f"\n{'='*55}")
     print(f"  Evaluation complete — {dataset.upper()}")
     print(f"{'='*55}")
@@ -328,10 +301,6 @@ def _save(path, results, errors, metrics, dataset, n, total_time=None):
         json.dump(data, f, indent=2)
     return data
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Backward compatibility exports for tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 def load_checkpoint(checkpoint_path: str) -> list[dict]:
     """Load partial results from a JSONL checkpoint file (compatibility helper)."""
@@ -377,10 +346,6 @@ def _print_basic_stats(results: list[dict]):
     avg_latency = np.mean(latencies) if latencies else 0.0
     print(f"High Risk Flagged: {high_risk}")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="LLM Lie Detector evaluation harness")

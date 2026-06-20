@@ -31,12 +31,10 @@ def format_prompt(user_msg: str) -> str:
     Llama-2-Chat               → <<SYS>> template
     Llama-3-Instruct           → <|begin_of_text|> template
     """
-    model_name = CONFIG["models"]["local"]["name"].lower() # Adjusted key based on config.yaml
+    model_name = CONFIG["models"]["local"]["name"].lower()
     msg = user_msg.strip()
     
     if "tinyllama" in model_name:
-        # TinyLlama-1.1B-Chat-v1.0 was fine-tuned with Zephyr chat template
-        # Source: https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0
         return (
             "<|system|>\n"
             "You are a helpful, accurate assistant. "
@@ -66,7 +64,6 @@ def format_prompt(user_msg: str) -> str:
         )
     
     else:
-        # Generic fallback — no template, just raw message
         logger.warning(f"Unknown model '{model_name}' — using raw prompt. May produce poor results.")
         return msg
 
@@ -85,13 +82,11 @@ def get_generation_with_scores(
     
     Returns dict always containing 'token_probs' key (may be empty list on failure).
     """
-    from models.model_loader import get_local_model # using my loader name
+    from models.model_loader import get_local_model
 
-    # Fallback to my config structure if the user's doesn't match
     max_tokens = max_new_tokens or 64 
     tokenizer, model = get_local_model()
 
-    # Apply correct chat template
     formatted = format_prompt(prompt)
     logger.debug(f"Formatted prompt (first 100 chars): {formatted[:100]}")
 
@@ -112,15 +107,14 @@ def get_generation_with_scores(
                 **inputs,
                 max_new_tokens=300,
                 min_new_tokens=50,
-                do_sample=False,               # greedy decoding
-                return_dict_in_generate=True,  # REQUIRED for .scores access
-                output_scores=True,            # REQUIRED for logit capture
+                do_sample=False,
+                return_dict_in_generate=True,
+                output_scores=True,
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                repetition_penalty=1.15,        # reduce repetition loops
+                repetition_penalty=1.15,
             )
 
-        # Verify scores were actually captured
         if not hasattr(outputs, 'scores') or outputs.scores is None:
             logger.error("output_scores not returned by model.generate(). "
                         "Check that return_dict_in_generate=True is set.")
@@ -129,23 +123,20 @@ def get_generation_with_scores(
             ).strip()
             return _fallback_result(response, reason="no_scores")
 
-        # Decode generated text
         generated_ids = outputs.sequences[0][input_len:]
         response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         
         logger.debug(f"Raw response: {response[:100]}")
 
-        # Extract per-token probabilities
         token_probs = []
         eos_id = tokenizer.eos_token_id
         
         for score_tensor, token_id in zip(outputs.scores, generated_ids):
-            # score_tensor: [1, vocab_size] → squeeze → [vocab_size]
             probs = torch.softmax(score_tensor.squeeze(0), dim=-1)
             chosen_prob = probs[token_id].item()
             token_probs.append(chosen_prob)
             if token_id.item() == eos_id:
-                break  # stop at end-of-sequence
+                break
 
         if not token_probs:
             logger.warning("No token probs captured — response may be empty")
@@ -155,7 +146,7 @@ def get_generation_with_scores(
         
         result = {
             "response":         response,
-            "token_probs":      token_probs,        # always present
+            "token_probs":      token_probs,
             "mean_confidence":  float(arr.mean()),
             "min_confidence":   float(arr.min()),
             "confidence_std":   float(arr.std()),
@@ -182,7 +173,7 @@ def _fallback_result(response: str = "[generation failed]", reason: str = "unkno
     logger.warning(f"Using calibration fallback (reason={reason})")
     return {
         "response":         response,
-        "token_probs":      [],          # empty list, NOT missing key
+        "token_probs":      [],
         "mean_confidence":  0.5,
         "min_confidence":   0.5,
         "confidence_std":   0.0,
@@ -202,11 +193,10 @@ def compute_calibration_score(token_probs: list) -> float:
     If token_probs is empty (fallback case), returns 0.5 (neutral).
     """
     if not token_probs:
-        return 0.5  # neutral — no information
+        return 0.5
 
     arr = np.array(token_probs, dtype=np.float64)
     
-    # Clip to valid range (softmax should guarantee this, but be safe)
     arr = np.clip(arr, 1e-10, 1.0)
     
     mean_component     = 1.0 - float(arr.mean())

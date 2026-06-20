@@ -6,8 +6,6 @@ import pytest
 from core.sanitizer import sanitize_prompt, MAX_PROMPT_LENGTH
 
 
-# ── Sanitisation Tests ───────────────────────────────────────────────
-
 class TestSanitizePrompt:
     def test_normal_input_unchanged(self):
         assert sanitize_prompt("Who invented the telephone?") == "Who invented the telephone?"
@@ -27,7 +25,7 @@ class TestSanitizePrompt:
     def test_excessive_repeat_collapsed(self):
         evil = "?" * 50
         result = sanitize_prompt(evil)
-        assert len(result) <= 5  # collapsed to 3 copies + tolerance
+        assert len(result) <= 5
 
     def test_injection_patterns_logged(self, caplog):
         """Injection phrases should trigger a warning log."""
@@ -50,27 +48,20 @@ class TestSanitizePrompt:
         assert sanitize_prompt(text) == text
 
 
-# ── Auth Module Tests ────────────────────────────────────────────────
-
 class TestAuthGate:
     def test_no_password_env_returns_true(self, monkeypatch):
         """When DASHBOARD_PASSWORD is not set, auth is bypassed."""
         monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
-        # Re-import to pick up the env change
         import importlib
         import ui.auth as auth_mod
         importlib.reload(auth_mod)
         assert auth_mod._DASHBOARD_PASSWORD is None
 
 
-# ── Groq Client Tests ───────────────────────────────────────────────
-
 class TestGroqClientSafety:
     def test_prompt_truncation_in_client(self):
         """The Groq client should truncate prompts > 10k chars."""
         import models.groq_client
-        # We can't call generate without a real key, but we can verify
-        # the truncation logic exists by inspecting the source
         import inspect
         source = inspect.getsource(models.groq_client.groq_generate)
         assert "4000" in source or "truncat" in source.lower()

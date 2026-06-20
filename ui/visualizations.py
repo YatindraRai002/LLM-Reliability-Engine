@@ -10,10 +10,8 @@ def uncertainty_scatter(embeddings_2d, cluster_labels, responses, uncertainty_sc
     coords = np.array(embeddings_2d, dtype=np.float32)
     labels = np.array(cluster_labels)
     
-    # Detect degenerate case: all points at same location (tiny variance)
     coord_range = coords.max() - coords.min() if len(coords) > 1 else 0
     if coord_range < 1e-10:
-        # All responses are identical — add small jitter for visibility
         np.random.seed(42)
         coords = coords + np.random.normal(0, 0.01, coords.shape)
         jitter_note = " (responses nearly identical — jitter added for visibility)"

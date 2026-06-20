@@ -33,7 +33,6 @@ def _get_client():
         
         api_key = os.getenv("GROQ_API_KEY", "").strip()
         
-        # Validate key format before even trying
         if not api_key:
             raise EnvironmentError(
                 "GROQ_API_KEY not set in .env file.\n"
@@ -59,7 +58,6 @@ def groq_generate(
     client = _get_client()
     model  = CONFIG["models"]["groq"]["name"]
     
-    # Truncate prompt to avoid token overflow
     if len(prompt) > 4000:
         prompt = prompt[:3500] + "\n...[truncated]...\n" + prompt[-500:]
     
@@ -79,7 +77,6 @@ def groq_generate(
         except Exception as e:
             err_str = str(e)
             
-            # 401 = invalid key — no point retrying
             if "401" in err_str or "Invalid API Key" in err_str:
                 raise EnvironmentError(
                     f"Groq API key is invalid (401). "
@@ -87,19 +84,17 @@ def groq_generate(
                     f"Raw error: {err_str}"
                 )
             
-            # 429 = rate limit — wait and retry
             if "429" in err_str or "rate" in err_str.lower():
-                wait = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                wait = 2.0 * (2 ** attempt)
                 logger.warning(f"Groq rate limit — waiting {wait}s (attempt {attempt+1}/{retries})")
                 time.sleep(wait)
                 continue
             
-            # Other transient errors
             if attempt < retries - 1:
                 time.sleep(2.0)
                 continue
             
-            raise  # re-raise on final attempt
+            raise
 
 
 def groq_generate_n_parallel(
@@ -117,7 +112,7 @@ def groq_generate_n_parallel(
     logger.info(f"Requesting {n} Groq samples at temp={temp} with stagger {stagger_ms}ms and {max_workers} concurrent workers")
     
     def _call(i: int) -> str:
-        time.sleep(i * (stagger_ms / 1000.0))  # stagger
+        time.sleep(i * (stagger_ms / 1000.0))
         return groq_generate(prompt, temperature=temp)
 
     results = []
@@ -140,7 +135,6 @@ def groq_generate_n_parallel(
             "Need at least 2. Check your API key and rate limits."
         )
     return results
-
 
 
 def groq_cross_check(prompt: str) -> str:
@@ -170,7 +164,6 @@ def safe_groq_cross_check(prompt: str) -> dict:
             "error":           None,
         }
     except EnvironmentError as e:
-        # Invalid key — user needs to fix this
         logger.error(f"Groq key error: {e}")
         return {
             "groq_response":   None,

@@ -13,7 +13,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── Authentication Gate ───────────────────────────────────────────────
 if not check_auth():
     st.stop()
 
@@ -22,7 +21,6 @@ if "history" not in st.session_state:
 if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
-# Rate-limit: minimum seconds between analyse requests
 RATE_LIMIT_SECONDS = 5
 
 st.sidebar.title("Navigation")
@@ -46,7 +44,6 @@ if page == "Detector":
         st.write("")
         run_btn = st.button("Analyze", use_container_width=True)
 
-    # ── Explanation checkbox ─────────────────────────────────────────
     show_explanation = st.checkbox(
         "Show explanation (slower)",
         value=False,
@@ -58,9 +55,7 @@ if page == "Detector":
     )
 
     if run_btn and query:
-        # ── Global IP Rate Limiting ──────────────────────────────────
         try:
-            # Streamlit 1.38+ supports st.context.headers for reading IPs natively
             client_ip = st.context.headers.get("X-Forwarded-For", "unknown-session")
         except Exception:
             client_ip = "unknown-session"
@@ -73,12 +68,10 @@ if page == "Detector":
         rate_limits = get_rate_limits()
         now = time.time()
 
-        # Clean up timestamps older than 60 seconds
         rate_limits[client_ip] = [
             ts for ts in rate_limits[client_ip] if now - ts < 60
         ]
 
-        # Allow maximum 5 requests per minute per user
         if len(rate_limits[client_ip]) >= 5:
             st.error(
                 "🚨 Global rate limit exceeded (Max 5 requests per minute). "
@@ -108,7 +101,6 @@ if page == "Detector":
                         if "result" in result_dict and isinstance(
                             result_dict["result"], object
                         ) and hasattr(result_dict["result"], "to_dict"):
-                            # already a dataclass — leave as-is for render_results
                             pass
 
                         st.session_state.current_result = result_dict

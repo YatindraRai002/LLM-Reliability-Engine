@@ -54,11 +54,9 @@ class PlattCalibrator:
 
         calibrated = [self.transform(s) for s in raw_scores]
 
-        # Compute ECE before and after
         ece_before = self._ece(raw_scores, labels)
         ece_after  = self._ece(calibrated, labels)
 
-        # Reliability diagram data
         frac_pos_before, mean_pred_before = calibration_curve(y, raw_scores,   n_bins=10)
         frac_pos_after,  mean_pred_after  = calibration_curve(y, calibrated,   n_bins=10)
 
@@ -81,7 +79,7 @@ class PlattCalibrator:
     def transform(self, raw_score: float) -> float:
         """Map raw score → calibrated probability."""
         if not self._fitted:
-            return float(raw_score)  # passthrough
+            return float(raw_score)
         return float(self.lr.predict_proba([[raw_score]])[0][1])
 
     def transform_batch(self, scores: list) -> list:
@@ -126,10 +124,6 @@ class PlattCalibrator:
         return float(ece)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Module-level singleton — loaded once at startup
-# ─────────────────────────────────────────────────────────────────────────────
-
 _calibrator = None
 
 
@@ -146,10 +140,6 @@ def calibrate_score(raw_score: float) -> float:
     """Public API — apply Platt calibration to a raw score."""
     return get_calibrator().transform(raw_score)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI commands
-# ─────────────────────────────────────────────────────────────────────────────
 
 def cmd_fit(input_file: str, output_path: str = None):
     """Fit calibrator from eval results and save."""
