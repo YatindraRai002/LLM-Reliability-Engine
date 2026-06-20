@@ -1,39 +1,340 @@
-"""
-Evaluation harness for the LLM Lie Detector pipeline.
-Supports TruthfulQA and HaluEval datasets with AUROC, precision, recall,
-per-category breakdown, tqdm progress, and checkpoint resume.
-
-Usage:
-    PYTHONPATH=. python evaluation/truthfulqa_eval.py
-    PYTHONPATH=. python evaluation/truthfulqa_eval.py --n_samples 100 --dataset both
-"""
-import json
-import time
-import logging
 import argparse
+import json
+import logging
 import os
-import sys
-import numpy as np
-from pathlib import Path
-from tqdm import tqdm
-from datasets import load_dataset
-from sklearn.metrics import roc_auc_score, average_precision_score, precision_score, recall_score
+import time
+from datetime import datetime
 
-logging.basicConfig(level=logging.INFO)
+import numpy as np
+import yaml
+from tqdm import tqdm
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# ── Constants ────────────────────────────────────────────────────────
-CHECKPOINT_FILE = "eval_checkpoint.jsonl"
-OUTPUT_FILE = "eval_results.json"
-ERROR_FILE = "eval_errors.json"
-
-TARGET_CATEGORIES = ["Finance", "Health", "Law", "Conspiracies", "Misconceptions"]
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(_ROOT, "config.yaml")) as f:
+    CONFIG = yaml.safe_load(f)
 
 
-# ── Checkpoint Resume ────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset loaders
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_truthfulqa(n: int, categories: list = None) -> list:
+    from datasets import load_dataset
+    logger.info("Loading TruthfulQA dataset...")
+    ds = load_dataset("truthful_qa", "generation", split="validation")
+    items = list(ds)
+    if categories:
+        items = [x for x in items if x.get("category") in categories]
+    items = items[:n] if n else items
+    logger.info(f"Loaded {len(items)} TruthfulQA examples")
+    return [
+        {
+            "id": i,
+            "question": x["question"],
+            "correct_answers": x.get("correct_answers", []),
+            "incorrect_answers": x.get("incorrect_answers", []),
+            "best_answer": x.get("best_answer", ""),
+            "category": x.get("category", "unknown"),
+            "dataset": "truthfulqa",
+        }
+        for i, x in enumerate(items)
+    ]
+
+
+def load_halueval(n: int) -> list:
+    from datasets import load_dataset
+    logger.info("Loading HaluEval dataset...")
+    try:
+        ds = load_dataset("pminervini/HaluEval", "qa_samples", split="data")
+        items = list(ds)[:n]
+        logger.info(f"Loaded {len(items)} HaluEval examples")
+        return [
+            {
+                "id": i,
+                "question": x.get("question", x.get("input", "")),
+                "correct_answers": [x.get("right_answer", x.get("answer", ""))],
+                "incorrect_answers": [x.get("hallucinated_answer", "")],
+                "best_answer": x.get("right_answer", x.get("answer", "")),
+                "category": "halueval",
+                "dataset": "halueval",
+                "is_hallucinated": True,
+            }
+            for i, x in enumerate(items)
+        ]
+    except Exception as e:
+        logger.warning(f"HaluEval load failed ({e}) — falling back to TruthfulQA")
+        return load_truthfulqa(n)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Correctness heuristic (no LLM judge — fast approximation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def approx_correctness(response: str, correct: list, incorrect: list) -> bool | None:
+    """
+    Heuristic correctness check using keyword matching.
+    Returns True (correct), False (incorrect), or None (ambiguous).
+    A proper evaluation uses an LLM judge — this is a fast approximation.
+    """
+    r = response.lower().strip()
+    if not r:
+        return None
+
+    for wrong in incorrect:
+        if len(wrong) < 10:
+            continue
+        key_words = [w for w in wrong.lower().split()[:4] if len(w) > 3]
+        if len(key_words) > 1 and sum(1 for w in key_words if w in r) >= 2:
+            return False
+
+    for right in correct:
+        if len(right) < 5:
+            continue
+        key_words = [w for w in right.lower().split()[:4] if len(w) > 3]
+        if len(key_words) > 1 and sum(1 for w in key_words if w in r) >= 2:
+            return True
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_metrics(results: list) -> dict:
+    from sklearn.metrics import (
+        roc_auc_score,
+        average_precision_score,
+        precision_recall_curve,
+    )
+
+    scores = [r["score"] for r in results]
+    labeled = [r for r in results if r["correctness"] is not None]
+
+    if len(labeled) < 5:
+        logger.warning("Not enough labeled examples for reliable metrics")
+        return {"auroc": None, "avg_precision": None, "n_labeled": len(labeled)}
+
+    # Label: 1 = hallucination (wrong answer), 0 = correct
+    y_true = [0 if r["correctness"] else 1 for r in labeled]
+    y_score = [r["score"] for r in labeled]
+
+    try:
+        auroc = float(roc_auc_score(y_true, y_score))
+    except Exception:
+        auroc = None
+
+    try:
+        ap = float(average_precision_score(y_true, y_score))
+    except Exception:
+        ap = None
+
+    # Optimal threshold (maximizes F1)
+    optimal_threshold = 0.5
+    best_f1 = 0.0
+    try:
+        prec, rec, thrs = precision_recall_curve(y_true, y_score)
+        f1_scores = 2 * prec * rec / (prec + rec + 1e-9)
+        best_idx = int(np.argmax(f1_scores))
+        best_f1 = float(f1_scores[best_idx])
+        optimal_threshold = float(thrs[min(best_idx, len(thrs) - 1)])
+    except Exception:
+        pass
+
+    # At optimal threshold
+    preds = [1 if s >= optimal_threshold else 0 for s in y_score]
+    tp = sum(1 for p, t in zip(preds, y_true) if p == 1 and t == 1)
+    fp = sum(1 for p, t in zip(preds, y_true) if p == 1 and t == 0)
+    fn = sum(1 for p, t in zip(preds, y_true) if p == 0 and t == 1)
+    precision = tp / (tp + fp + 1e-9)
+    recall = tp / (tp + fn + 1e-9)
+
+    # Category breakdown
+    category_stats = {}
+    for r in results:
+        cat = r.get("category", "unknown")
+        if cat not in category_stats:
+            category_stats[cat] = {"count": 0, "scores": [], "high_risk": 0}
+        category_stats[cat]["count"] += 1
+        category_stats[cat]["scores"].append(r["score"])
+        if r["label"] == "high":
+            category_stats[cat]["high_risk"] += 1
+    for cat in category_stats:
+        s = category_stats[cat]["scores"]
+        category_stats[cat]["mean_score"] = round(float(np.mean(s)), 3)
+        del category_stats[cat]["scores"]
+
+    # Latency percentiles
+    latencies = [r["elapsed"] for r in results]
+    lat_p50 = float(np.percentile(latencies, 50))
+    lat_p95 = float(np.percentile(latencies, 95))
+
+    return {
+        "auroc": round(auroc, 4) if auroc else None,
+        "avg_precision": round(ap, 4) if ap else None,
+        "precision_at_threshold": round(precision, 4),
+        "recall_at_threshold": round(recall, 4),
+        "best_f1": round(best_f1, 4),
+        "optimal_threshold": round(optimal_threshold, 3),
+        "n_total": len(results),
+        "n_labeled": len(labeled),
+        "score_mean": round(float(np.mean(scores)), 3),
+        "score_std": round(float(np.std(scores)), 3),
+        "risk_distribution": {
+            lbl: sum(1 for r in results if r["label"] == lbl)
+            for lbl in ("low", "medium", "high")
+        },
+        "latency_p50_s": round(lat_p50, 2),
+        "latency_p95_s": round(lat_p95, 2),
+        "category_breakdown": category_stats,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main evaluation loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run(
+    n: int = 100,
+    dataset: str = "truthfulqa",
+    out_file: str = None,
+    resume_file: str = None,
+    local_sampling: bool = False,
+) -> dict:
+    from core.aggregator import run_full_pipeline
+
+    # Load examples
+    if dataset == "halueval":
+        examples = load_halueval(n)
+    else:
+        cats = CONFIG.get("evaluation", {}).get("target_categories", None)
+        examples = load_truthfulqa(n, cats)
+
+    # Resume from partial results
+    done_ids = set()
+    results = []
+    errors = []
+    if resume_file and os.path.exists(resume_file):
+        with open(resume_file) as f:
+            partial = json.load(f)
+        results = partial.get("results", [])
+        errors = partial.get("errors", [])
+        done_ids = {r["id"] for r in results}
+        logger.info(f"Resuming: {len(done_ids)} already done")
+
+    out_file = out_file or f"eval_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    t_total = time.time()
+
+    for ex in tqdm(examples, desc=f"Evaluating {dataset}"):
+        if ex["id"] in done_ids:
+            continue
+        try:
+            t = time.time()
+            out = run_full_pipeline(
+                ex["question"],
+                use_local_for_uncertainty=local_sampling,
+            )
+            elapsed = round(time.time() - t, 2)
+
+            resp = out["calibration_detail"].get("response", "")
+            correctness = approx_correctness(
+                resp,
+                ex.get("correct_answers", []),
+                ex.get("incorrect_answers", []),
+            )
+
+            results.append({
+                "id":           ex["id"],
+                "question":     ex["question"],
+                "category":     ex.get("category", "unknown"),
+                "dataset":      ex.get("dataset", dataset),
+                "best_answer":  ex.get("best_answer", ""),
+                "response":     resp,
+                "correctness":  correctness,
+                
+                # New keys
+                "score":        out["result"].score,
+                "label":        out["result"].label,
+                "elapsed":      elapsed,
+                
+                # Compatibility keys
+                "hallucination_score": out["result"].score,
+                "risk_label":          out["result"].label,
+                "elapsed_seconds":      elapsed,
+                
+                "calibration":  out["result"].calibration_score,
+                "uncertainty":  out["result"].uncertainty_score,
+                "cross_check":  out["result"].cross_check_score,
+                "n_clusters":   out["uncertainty_detail"].get("n_semantic_clusters", 1),
+                "verdict":      out["cross_check_detail"].get("verdict", ""),
+                "groq_ok":      out["cross_check_detail"].get("groq_available", False),
+            })
+
+        except Exception as e:
+            logger.error(f"Error on [{ex['id']}]: {e}")
+            errors.append({"id": ex["id"], "question": ex["question"], "error": str(e)})
+
+        # Checkpoint every 10 examples
+        if (len(results) + len(errors)) % 10 == 0:
+            _save(out_file, results, errors, {}, dataset, n)
+
+    metrics = compute_metrics(results)
+    total_time = round(time.time() - t_total, 1)
+
+    data = _save(out_file, results, errors, metrics, dataset, n, total_time)
+
+    # Print summary
+    print(f"\n{'='*55}")
+    print(f"  Evaluation complete — {dataset.upper()}")
+    print(f"{'='*55}")
+    print(f"  Examples evaluated : {metrics['n_total']}")
+    print(f"  Labeled examples   : {metrics['n_labeled']}")
+    print(f"  AUROC              : {metrics['auroc']}")
+    print(f"  Avg precision      : {metrics['avg_precision']}")
+    print(f"  Precision @ thresh : {metrics['precision_at_threshold']}")
+    print(f"  Recall @ thresh    : {metrics['recall_at_threshold']}")
+    print(f"  Best F1            : {metrics['best_f1']}")
+    print(f"  Score mean ± std   : {metrics['score_mean']} ± {metrics['score_std']}")
+    print(f"  Latency p50 / p95  : {metrics['latency_p50_s']}s / {metrics['latency_p95_s']}s")
+    print(f"  Risk distribution  : {metrics['risk_distribution']}")
+    print(f"  Total time         : {total_time}s")
+    print(f"  Results saved to   : {out_file}")
+    print(f"{'='*55}\n")
+
+    return data
+
+
+def _save(path, results, errors, metrics, dataset, n, total_time=None):
+    data = {
+        "metadata": {
+            "timestamp":    datetime.now().isoformat(),
+            "dataset":      dataset,
+            "n_requested":  n,
+            "total_time_s": total_time,
+            "config": {
+                "weights":    CONFIG.get("detection", {}).get("weights", {}),
+                "thresholds": CONFIG.get("detection", {}).get("thresholds", {}),
+                "n_samples":  CONFIG.get("sampling", {}).get("n_samples", 6),
+            },
+        },
+        "metrics":  metrics,
+        "results":  results,
+        "errors":   errors,
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backward compatibility exports for tests
+# ─────────────────────────────────────────────────────────────────────────────
 
 def load_checkpoint(checkpoint_path: str) -> list[dict]:
-    """Load partial results from a JSONL checkpoint file."""
+    """Load partial results from a JSONL checkpoint file (compatibility helper)."""
     results = []
     if os.path.exists(checkpoint_path):
         with open(checkpoint_path, "r") as f:
@@ -44,332 +345,57 @@ def load_checkpoint(checkpoint_path: str) -> list[dict]:
                         results.append(json.loads(line))
                     except json.JSONDecodeError:
                         continue
-        logger.info(f"Resumed {len(results)} results from checkpoint: {checkpoint_path}")
     return results
 
 
 def append_checkpoint(checkpoint_path: str, result: dict):
-    """Append a single result to the JSONL checkpoint file."""
+    """Append a single result to the JSONL checkpoint file (compatibility helper)."""
     with open(checkpoint_path, "a") as f:
         f.write(json.dumps(result, default=str) + "\n")
 
 
-# ── NLI-based Correctness Scoring ────────────────────────────────────
-
-def score_correctness_nli(model_response: str, reference_answer: str) -> bool | None:
-    """
-    Use the NLI model to determine if the model response is correct
-    by checking entailment against the reference answer.
-    Returns True if entailment > contradiction, False otherwise.
-    Returns None if scoring fails.
-    """
-    if not model_response or not reference_answer:
-        return None
-
-    try:
-        from core.cross_check import nli_score_sync
-        scores = nli_score_sync(model_response, reference_answer)
-        # If the model's response entails the reference answer, it's correct
-        return scores["entailment"] > scores["contradiction"]
-    except Exception as e:
-        logger.warning(f"NLI correctness scoring failed: {e}")
-        return None
-
-
-# ── Dataset Loaders ──────────────────────────────────────────────────
-
-def load_truthfulqa_samples(n_samples: int) -> list[dict]:
-    """Load and filter TruthfulQA samples by target categories."""
-    logger.info("Loading TruthfulQA dataset...")
-    try:
-        dataset = load_dataset("truthful_qa", "generation")["validation"]
-    except Exception as e:
-        logger.error(f"Failed to load TruthfulQA: {e}")
-        return []
-
-    filtered = [
-        {
-            "question": ex["question"],
-            "best_answer": ex["best_answer"],
-            "category": ex["category"],
-            "dataset": "truthfulqa",
-        }
-        for ex in dataset
-        if ex["category"] in TARGET_CATEGORIES
-    ][:n_samples]
-
-    logger.info(f"Loaded {len(filtered)} TruthfulQA samples across categories: "
-                f"{set(s['category'] for s in filtered)}")
-    return filtered
-
-
-def load_halueval_samples(n_samples: int) -> list[dict]:
-    """
-    Load HaluEval QA samples. Each sample has a question,
-    a hallucinated answer, and a correct answer.
-    We create two eval entries per sample: one correct, one hallucinated.
-    """
-    logger.info("Loading HaluEval dataset...")
-    try:
-        dataset = load_dataset("pminervini/HaluEval", "qa_samples")
-        split = dataset.get("data") or dataset.get("train") or list(dataset.values())[0]
-    except Exception as e:
-        logger.warning(f"Failed to load HaluEval (may require HF token): {e}")
-        return []
-
-    samples = []
-    for ex in list(split)[:n_samples // 2]:
-        question = ex.get("question", "")
-        hallucinated = ex.get("hallucinated_answer", "")
-        correct = ex.get("right_answer", ex.get("correct_answer", ""))
-
-        if question and hallucinated:
-            samples.append({
-                "question": question,
-                "best_answer": correct,
-                "category": "HaluEval",
-                "dataset": "halueval",
-                "is_hallucination_input": False,
-            })
-        if question and correct:
-            samples.append({
-                "question": question,
-                "best_answer": correct,
-                "category": "HaluEval",
-                "dataset": "halueval",
-                "is_hallucination_input": False,
-            })
-
-    logger.info(f"Loaded {len(samples)} HaluEval samples")
-    return samples[:n_samples]
-
-
-# ── Main Evaluation Runner ───────────────────────────────────────────
-
-def run_evaluation(
-    n_samples: int = 50,
-    dataset_choice: str = "truthfulqa",
-    output_file: str = OUTPUT_FILE,
-    checkpoint_file: str = CHECKPOINT_FILE,
-    resume: bool = True,
-) -> list[dict]:
-    """
-    Run the full evaluation pipeline with checkpoint resume support.
-
-    Args:
-        n_samples: Number of samples to evaluate per dataset.
-        dataset_choice: "truthfulqa", "halueval", or "both".
-        output_file: Path for the final JSON results.
-        checkpoint_file: Path for the JSONL checkpoint file.
-        resume: Whether to resume from checkpoint.
-    """
-    from core.aggregator import run_full_pipeline
-
-    # 1. Load datasets
-    samples = []
-    if dataset_choice in ("truthfulqa", "both"):
-        samples.extend(load_truthfulqa_samples(n_samples))
-    if dataset_choice in ("halueval", "both"):
-        samples.extend(load_halueval_samples(n_samples))
-
-    if not samples:
-        logger.error("No evaluation samples loaded. Exiting.")
-        return []
-
-    # 2. Resume from checkpoint
-    completed_results = []
-    completed_questions = set()
-    if resume:
-        completed_results = load_checkpoint(checkpoint_file)
-        completed_questions = {r["question"] for r in completed_results}
-
-    # Filter out already-completed samples
-    remaining_samples = [s for s in samples if s["question"] not in completed_questions]
-    logger.info(f"Total samples: {len(samples)}, "
-                f"Already completed: {len(completed_results)}, "
-                f"Remaining: {len(remaining_samples)}")
-
-    # 3. Run pipeline on remaining samples
-    errors = []
-    for sample in tqdm(remaining_samples, desc="Evaluating", unit="sample"):
-        question = sample["question"]
-        category = sample["category"]
-        best_answer = sample["best_answer"]
-
-        start = time.time()
-        try:
-            pipeline_result = run_full_pipeline(question)
-            elapsed = time.time() - start
-
-            # Determine correctness via NLI
-            model_response = pipeline_result.get("calibration_detail", {}).get("response", "")
-            correctness = score_correctness_nli(model_response, best_answer)
-
-            result = {
-                "question": question,
-                "category": category,
-                "dataset": sample.get("dataset", "truthfulqa"),
-                "best_answer": best_answer,
-                "model_response": model_response,
-                "hallucination_score": pipeline_result["result"].score,
-                "risk_label": pipeline_result["result"].label,
-                "elapsed_seconds": round(elapsed, 2),
-                "calibration": pipeline_result["result"].calibration_score,
-                "uncertainty": pipeline_result["result"].uncertainty_score,
-                "cross_check": pipeline_result["result"].cross_check_score,
-                "correctness": correctness,
-            }
-
-            completed_results.append(result)
-            append_checkpoint(checkpoint_file, result)
-
-        except Exception as e:
-            elapsed = time.time() - start
-            logger.error(f"Pipeline failed for: {question[:60]}... — {e}")
-            errors.append({
-                "question": question,
-                "category": category,
-                "error": str(e),
-                "elapsed_seconds": round(elapsed, 2),
-            })
-
-    # 4. Save final results
-    with open(output_file, "w") as f:
-        json.dump(completed_results, f, indent=2, default=str)
-    logger.info(f"Saved {len(completed_results)} results to {output_file}")
-
-    # 5. Save errors
-    if errors:
-        with open(ERROR_FILE, "w") as f:
-            json.dump(errors, f, indent=2)
-        logger.warning(f"Saved {len(errors)} errors to {ERROR_FILE}")
-
-    # 6. Compute and print metrics
-    print_metrics(completed_results)
-
-    return completed_results
-
-
-# ── Metrics Computation ──────────────────────────────────────────────
-
 def print_metrics(results: list[dict]):
-    """Compute and print AUROC, AP, precision, recall, per-category breakdown."""
-    if not results:
-        logger.warning("No results to compute metrics from.")
-        return
-
-    # Filter results with valid correctness labels
-    labeled = [r for r in results if r.get("correctness") is not None]
-
-    if len(labeled) < 2:
-        logger.warning(f"Only {len(labeled)} labeled samples — need at least 2 for AUROC.")
-        return
-
-    # scores = hallucination likelihood, labels = 1 if hallucination (not correct)
-    scores = [r["hallucination_score"] for r in labeled]
-    labels = [0 if r["correctness"] else 1 for r in labeled]
-
-    # Check if we have both classes
-    unique_labels = set(labels)
-    if len(unique_labels) < 2:
-        logger.warning(f"Only one class present in labels ({unique_labels}). Cannot compute AUROC.")
-        _print_basic_stats(results)
-        return
-
-    auroc = roc_auc_score(labels, scores)
-    ap = average_precision_score(labels, scores)
-
-    # Threshold-based precision/recall at 0.5
-    predicted = [1 if s >= 0.5 else 0 for s in scores]
-    prec = precision_score(labels, predicted, zero_division=0)
-    rec = recall_score(labels, predicted, zero_division=0)
-
-    # Latency stats
-    latencies = [r["elapsed_seconds"] for r in results]
-    p50 = np.percentile(latencies, 50)
-    p95 = np.percentile(latencies, 95)
-    p99 = np.percentile(latencies, 99)
-
-    print("\n" + "=" * 60)
-    print("  EVALUATION SUMMARY")
-    print("=" * 60)
-    print(f"  Samples Processed:  {len(results)}")
-    print(f"  Labeled Samples:    {len(labeled)}")
-    print(f"  Hallucinations:     {sum(labels)} / {len(labels)}")
-    print()
-    print(f"  AUROC:              {auroc:.4f}  {'✅' if auroc > 0.80 else '⚠️'}")
-    print(f"  Average Precision:  {ap:.4f}")
-    print(f"  Precision (@0.5):   {prec:.4f}  {'✅' if prec > 0.75 else '⚠️'}")
-    print(f"  Recall (@0.5):      {rec:.4f}  {'✅' if rec > 0.70 else '⚠️'}")
-    print()
-    print(f"  Latency P50:        {p50:.2f}s")
-    print(f"  Latency P95:        {p95:.2f}s  {'✅' if p95 < 30 else '⚠️'}")
-    print(f"  Latency P99:        {p99:.2f}s")
-    print("=" * 60)
-
-    # Per-category breakdown
-    categories = set(r["category"] for r in labeled)
-    if len(categories) > 1:
-        print("\n  PER-CATEGORY BREAKDOWN:")
-        print(f"  {'Category':<20} {'Count':>6} {'AUROC':>8} {'Avg Score':>10}")
-        print("  " + "-" * 48)
-
-        for cat in sorted(categories):
-            cat_results = [r for r in labeled if r["category"] == cat]
-            cat_scores = [r["hallucination_score"] for r in cat_results]
-            cat_labels = [0 if r["correctness"] else 1 for r in cat_results]
-            cat_avg = np.mean(cat_scores)
-
-            if len(set(cat_labels)) >= 2:
-                cat_auroc = roc_auc_score(cat_labels, cat_scores)
-                print(f"  {cat:<20} {len(cat_results):>6} {cat_auroc:>8.4f} {cat_avg:>10.4f}")
-            else:
-                print(f"  {cat:<20} {len(cat_results):>6} {'N/A':>8} {cat_avg:>10.4f}")
-
-        print("=" * 60)
+    """Print metrics (compatibility helper)."""
+    print("--- EVALUATION SUMMARY ---")
+    mapped = []
+    for r in results:
+        mapped.append({
+            "score": r.get("score", r.get("hallucination_score", 0.0)),
+            "correctness": r.get("correctness"),
+            "label": r.get("label", r.get("risk_label", "low")),
+            "category": r.get("category", "unknown"),
+            "elapsed": r.get("elapsed", r.get("elapsed_seconds", 0.0)),
+        })
+    metrics = compute_metrics(mapped)
+    print(f"AUROC: {metrics.get('auroc')}")
 
 
 def _print_basic_stats(results: list[dict]):
-    """Fallback stats when AUROC can't be computed."""
-    high_risk = sum(1 for r in results if r["risk_label"] == "high")
-    avg_latency = np.mean([r["elapsed_seconds"] for r in results])
-
-    print("\n" + "=" * 60)
-    print("  EVALUATION SUMMARY (Basic — insufficient labels for AUROC)")
-    print("=" * 60)
-    print(f"  Samples Processed:  {len(results)}")
-    print(f"  High Risk Flagged:  {high_risk}/{len(results)} "
-          f"({100 * high_risk / len(results):.1f}%)")
-    print(f"  Avg Latency:        {avg_latency:.2f}s per query")
-    print("=" * 60)
+    """Fallback stats (compatibility helper)."""
+    high_risk = sum(1 for r in results if r.get("label", r.get("risk_label")) == "high")
+    latencies = [r.get("elapsed", r.get("elapsed_seconds", 0.0)) for r in results]
+    avg_latency = np.mean(latencies) if latencies else 0.0
+    print(f"High Risk Flagged: {high_risk}")
 
 
-# ── CLI Entry Point ──────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(description="LLM Lie Detector Evaluation Harness")
-    parser.add_argument("--n_samples", type=int, default=50,
-                        help="Number of samples per dataset (default: 50)")
-    parser.add_argument("--dataset", type=str, default="truthfulqa",
-                        choices=["truthfulqa", "halueval", "both"],
-                        help="Which dataset(s) to evaluate on (default: truthfulqa)")
-    parser.add_argument("--output", type=str, default=OUTPUT_FILE,
-                        help="Output file for results JSON")
-    parser.add_argument("--no-resume", action="store_true",
-                        help="Start fresh instead of resuming from checkpoint")
-    args = parser.parse_args()
-
-    if args.no_resume and os.path.exists(CHECKPOINT_FILE):
-        os.remove(CHECKPOINT_FILE)
-        logger.info("Cleared previous checkpoint.")
-
-    run_evaluation(
-        n_samples=args.n_samples,
-        dataset_choice=args.dataset,
-        output_file=args.output,
-        resume=not args.no_resume,
-    )
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    main()
+    p = argparse.ArgumentParser(description="LLM Lie Detector evaluation harness")
+    p.add_argument("--n",             type=int,   default=100,         help="Number of examples")
+    p.add_argument("--dataset",       type=str,   default="truthfulqa", choices=["truthfulqa","halueval"])
+    p.add_argument("--output",        type=str,   default=None,         help="Output JSON path")
+    p.add_argument("--resume",        type=str,   default=None,         help="Resume from partial JSON")
+    p.add_argument("--local-sampling",action="store_true",              help="Use local model for sampling")
+    args = p.parse_args()
+
+    run(
+        n               = args.n,
+        dataset         = args.dataset,
+        out_file        = args.output,
+        resume_file     = args.resume,
+        local_sampling  = args.local_sampling,
+    )
+

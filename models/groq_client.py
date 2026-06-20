@@ -111,14 +111,17 @@ def groq_generate_n_parallel(
     n    = n    or CONFIG["sampling"]["n_samples"]
     temp = temperature or CONFIG["sampling"]["temperature"]
     
-    logger.info(f"Requesting {n} Groq samples at temp={temp}")
+    stagger_ms = CONFIG["sampling"].get("request_stagger_ms", 300)
+    max_workers = CONFIG["sampling"].get("max_concurrent_requests", 3)
+    
+    logger.info(f"Requesting {n} Groq samples at temp={temp} with stagger {stagger_ms}ms and {max_workers} concurrent workers")
     
     def _call(i: int) -> str:
-        time.sleep(i * 0.2)  # stagger 200ms
+        time.sleep(i * (stagger_ms / 1000.0))  # stagger
         return groq_generate(prompt, temperature=temp)
 
     results = []
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_call, i) for i in range(n)]
         for f in as_completed(futures):
             try:
@@ -137,6 +140,7 @@ def groq_generate_n_parallel(
             "Need at least 2. Check your API key and rate limits."
         )
     return results
+
 
 
 def groq_cross_check(prompt: str) -> str:

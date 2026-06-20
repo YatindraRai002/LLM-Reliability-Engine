@@ -24,6 +24,9 @@ detection:
 sampling:
   n_samples: 6
   temperature: 0.8
+  request_stagger_ms: 300
+  max_concurrent_requests: 3
+
 
 credentials:
   usernames:

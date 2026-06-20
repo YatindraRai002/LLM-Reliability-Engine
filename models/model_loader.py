@@ -25,7 +25,7 @@ def load_config():
 CONFIG = load_config()
 
 @lru_cache(maxsize=1)
-def get_open_model():
+def get_local_model():
     """Load the open-source LLM. Cached — loads only once per process."""
     model_cfg = CONFIG["models"]["local"]
     model_name = model_cfg["name"]
@@ -99,7 +99,7 @@ def get_system_info() -> dict:
         info["vram_usage"] = "N/A"
 
     # Check which models are loaded in lru_cache
-    if get_open_model.cache_info().currsize > 0:
+    if get_local_model.cache_info().currsize > 0:
         info["models_loaded"].append(CONFIG["models"]["local"]["name"])
     if get_embedding_model.cache_info().currsize > 0:
         info["models_loaded"].append(CONFIG["models"]["embedding"]["name"])
@@ -108,3 +108,5 @@ def get_system_info() -> dict:
 
     return info
 
+# Deprecated alias, remove after full audit
+get_open_model = get_local_model

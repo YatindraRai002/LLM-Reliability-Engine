@@ -85,11 +85,11 @@ def get_generation_with_scores(
     
     Returns dict always containing 'token_probs' key (may be empty list on failure).
     """
-    from models.model_loader import get_open_model # using my loader name
+    from models.model_loader import get_local_model # using my loader name
 
     # Fallback to my config structure if the user's doesn't match
     max_tokens = max_new_tokens or 64 
-    tokenizer, model = get_open_model()
+    tokenizer, model = get_local_model()
 
     # Apply correct chat template
     formatted = format_prompt(prompt)

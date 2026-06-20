@@ -4,7 +4,7 @@ import torch
 import yaml
 import logging
 from sklearn.cluster import AgglomerativeClustering
-from models.model_loader import get_open_model, get_embedding_model, CONFIG
+from models.model_loader import get_local_model, get_embedding_model, CONFIG
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def generate_n_samples_batch(
     lock = asyncio.Lock()
     async with lock:
         try:
-            tokenizer, model = get_open_model()
+            tokenizer, model = get_local_model()
             model_name = CONFIG["models"]["local"]["name"]
             formatted = _format_prompt(prompt, model_name)
             inputs = tokenizer([formatted] * n, return_tensors="pt", padding=True).to(model.device)

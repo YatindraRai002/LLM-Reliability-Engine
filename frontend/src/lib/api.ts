@@ -73,16 +73,34 @@ export interface HistoryRow {
 }
 
 export async function analyzeQuery(query: string): Promise<AnalyzeResult> {
-  const res = await fetch(`${API_BASE}/api/analyze`, {
+  const res = await fetch(`${API_BASE}/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ prompt: query }),
   });
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(`Analysis failed: ${detail}`);
+    throw new Error(`Analysis start failed: ${detail}`);
   }
-  return res.json();
+  
+  const { job_id } = await res.json();
+  
+  // Poll for result
+  while (true) {
+    const pollRes = await fetch(`${API_BASE}/result/${job_id}`);
+    if (!pollRes.ok) {
+        throw new Error(`Polling failed`);
+    }
+    const data = await pollRes.json();
+    if (data.status === "done") {
+        return data.result;
+    } else if (data.status === "error") {
+        throw new Error(data.error);
+    }
+    
+    // Wait 2 seconds before next poll
+    await new Promise(r => setTimeout(r, 2000));
+  }
 }
 
 export async function getHistory(): Promise<{

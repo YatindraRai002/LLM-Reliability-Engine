@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -7,18 +7,51 @@ import sqlite3
 import json
 import sys
 import os
+import time
+import uuid
 
 # Ensure the root directory is in the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.aggregator import run_full_pipeline
-from core.cache import set_cached
+from core.cache import get_cached, set_cached
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from backend.metrics import (
+    REQUEST_COUNT,
+    REQUEST_LATENCY,
+    HALLUCINATION_SCORE,
+    CACHE_HIT_COUNT,
+    RISK_LABEL_COUNT,
+    ACTIVE_REQUESTS,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LLM Lie Detector API", description="Backend API for running the detection pipeline.")
+
+# Metrics Middleware to track all requests and latencies
+@app.middleware("http")
+async def add_metrics_middleware(request: Request, call_next):
+    path = request.url.path
+    if path == "/metrics":
+        return await call_next(request)
+
+    ACTIVE_REQUESTS.inc()
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        status = str(response.status_code)
+        REQUEST_COUNT.labels(method=request.method, endpoint=path, status=status).inc()
+        latency = time.time() - start_time
+        REQUEST_LATENCY.labels(endpoint=path).observe(latency)
+        return response
+    except Exception as e:
+        REQUEST_COUNT.labels(method=request.method, endpoint=path, status="500").inc()
+        raise e
+    finally:
+        ACTIVE_REQUESTS.dec()
 
 # CORS — allow Next.js frontend from any origin in dev, restrict in prod
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
@@ -37,34 +70,89 @@ SQLITE_DB_PATH = os.path.join(_ROOT, "results.db")
 
 
 class AnalyzeRequest(BaseModel):
-    query: str
+    prompt: str
     use_local_for_uncertainty: Optional[bool] = False
     # explain=False skips the Phase B explanation engine for speed.
     # Downstream consumers must use result_dict.get("explanation_detail", {}).
     explain: Optional[bool] = True
 
+jobs = {}
 
-@app.post("/api/analyze")
-def analyze_query(request: AnalyzeRequest):
-    logger.info(f"Received API request for query: {request.query}")
+
+@app.get("/metrics")
+def get_metrics():
+    """Endpoint to expose Prometheus metrics."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+def background_analyze(job_id: str, request: AnalyzeRequest):
+    logger.info(f"Background processing started for job {job_id}, prompt: {request.prompt}")
     try:
+        # Check cache hit
+        cached_result = get_cached(request.prompt)
+        if cached_result:
+            CACHE_HIT_COUNT.labels(status="hit").inc()
+            res_val = cached_result.get("result")
+            if res_val:
+                score = res_val.get("score")
+                label = res_val.get("label")
+                if score is not None:
+                    HALLUCINATION_SCORE.observe(score)
+                if label is not None:
+                    RISK_LABEL_COUNT.labels(label=label).inc()
+            jobs[job_id] = {"status": "done", "result": cached_result}
+            return
+
+        CACHE_HIT_COUNT.labels(status="miss").inc()
+
         result_dict = run_full_pipeline(
-            request.query,
+            request.prompt,
             request.use_local_for_uncertainty,
             explain=request.explain if request.explain is not None else True,
         )
 
         # Persist to SQLite for analytics dashboard
-        set_cached(request.query, None, result_dict)
+        set_cached(request.prompt, None, result_dict)
+
+        # Record pipeline metrics
+        res = result_dict.get("result")
+        if res:
+            # Handle both object and dict (to_dict() hasn't run yet)
+            score = getattr(res, "score", None)
+            if score is None and isinstance(res, dict):
+                score = res.get("score")
+            
+            label = getattr(res, "label", None)
+            if label is None and isinstance(res, dict):
+                label = res.get("label")
+
+            if score is not None:
+                HALLUCINATION_SCORE.observe(float(score))
+            if label is not None:
+                RISK_LABEL_COUNT.labels(label=label).inc()
 
         # Convert HallucinationResult dataclass to dict so FastAPI can serialize it
         if "result" in result_dict and hasattr(result_dict["result"], "to_dict"):
             result_dict["result"] = result_dict["result"].to_dict()
 
-        return result_dict
+        jobs[job_id] = {"status": "done", "result": result_dict}
     except Exception as e:
-        logger.error(f"Pipeline error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Pipeline error for job {job_id}: {e}")
+        jobs[job_id] = {"status": "error", "error": str(e)}
+
+@app.post("/analyze", status_code=202)
+def analyze_query(request: AnalyzeRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "pending"}
+    background_tasks.add_task(background_analyze, job_id, request)
+    return {"job_id": job_id, "status": "pending"}
+
+@app.get("/result/{job_id}")
+def get_result(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return jobs[job_id]
+
 
 
 @app.get("/api/history")
