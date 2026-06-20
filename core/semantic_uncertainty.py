@@ -166,11 +166,30 @@ def compute_semantic_uncertainty(responses: list[str]) -> dict:
     return result
 
 def run_semantic_uncertainty_pipeline(prompt: str, use_local: bool = False) -> dict:
+    if not use_local:
+        from models.groq_client import groq_generate_n_parallel
+        try:
+            responses = groq_generate_n_parallel(prompt)
+            return compute_semantic_uncertainty(responses)
+        except Exception as e:
+            logger.error(f"Groq parallel sampling failed: {e}. Falling back to local model.")
+            
     import asyncio
     responses = asyncio.run(generate_n_samples_batch(prompt))
     return compute_semantic_uncertainty(responses)
 
-async def run_semantic_uncertainty_pipeline_async(prompt: str) -> dict:
+async def run_semantic_uncertainty_pipeline_async(prompt: str, use_local: bool = False) -> dict:
     """Async pipeline orchestrator."""
+    if not use_local:
+        from models.groq_client import groq_generate_n_parallel
+        import asyncio
+        loop = asyncio.get_running_loop()
+        try:
+            # Run the synchronous ThreadPoolExecutor-based groq_generate_n_parallel in a thread
+            responses = await loop.run_in_executor(None, groq_generate_n_parallel, prompt)
+            return compute_semantic_uncertainty(responses)
+        except Exception as e:
+            logger.error(f"Groq parallel sampling failed: {e}. Falling back to local model.")
+
     responses = await generate_n_samples_batch(prompt)
     return compute_semantic_uncertainty(responses)

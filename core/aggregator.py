@@ -176,7 +176,7 @@ def run_full_pipeline(
     # Downstream consumers (UI, tests, analytics) must use .get() to access
     # explanation fields — never assume the key contains a populated dict.
     from core.calibration          import get_generation_with_scores, compute_calibration_score
-    from core.semantic_uncertainty import compute_semantic_uncertainty
+    from core.semantic_uncertainty import run_semantic_uncertainty_pipeline
     from core.cross_check          import run_cross_check
 
     t0 = time.time()
@@ -197,54 +197,54 @@ def run_full_pipeline(
     timings["calibration"] = round(time.time()-t, 2)
     logger.info(f"  cal={cal_score:.3f} ({timings['calibration']}s)")
 
-    # Step 2: Semantic uncertainty
-    t = time.time()
-    logger.info("Step 2/3: Semantic uncertainty...")
-    try:
-        # We need to map run_semantic_uncertainty_pipeline to our existing compute_semantic_uncertainty
-        # since the user code calls run_semantic_uncertainty_pipeline which was async in our version
-        # I will just run the synchronous generation batch from the async method via asyncio.run
-        import asyncio
-        from core.semantic_uncertainty import generate_n_samples_batch
-        responses = asyncio.run(generate_n_samples_batch(prompt))
-        sem_detail = compute_semantic_uncertainty(responses)
-        sem_score = sem_detail["uncertainty_score"]
-    except Exception as e:
-        logger.error(f"Semantic uncertainty failed: {e}")
-        sem_detail = {
-            "uncertainty_score":        0.5,
-            "n_semantic_clusters":      1,
-            "normalized_entropy":       0.5,
-            "responses":                [],
-            "embeddings_2d":            [],
-            "cluster_labels":           [],
-            "mean_pairwise_similarity": 1.0,
-        }
-        sem_score = 0.5
-    timings["semantic_uncertainty"] = round(time.time()-t, 2)
-    logger.info(f"  unc={sem_score:.3f} ({timings['semantic_uncertainty']}s)")
+    # Run Step 2 (Semantic Uncertainty) and Step 3 (Cross-check) in parallel
+    from concurrent.futures import ThreadPoolExecutor
+    t23 = time.time()
+    
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_sem = executor.submit(run_semantic_uncertainty_pipeline, prompt, use_local_for_uncertainty)
+        future_cc = executor.submit(run_cross_check, prompt, cal_detail.get("response", ""))
+        
+        # Step 2: Semantic uncertainty processing
+        logger.info("Step 2/3: Semantic uncertainty...")
+        try:
+            sem_detail = future_sem.result()
+            sem_score = sem_detail["uncertainty_score"]
+        except Exception as e:
+            logger.error(f"Semantic uncertainty failed: {e}")
+            sem_detail = {
+                "uncertainty_score":        0.5,
+                "n_semantic_clusters":      1,
+                "normalized_entropy":       0.5,
+                "responses":                [],
+                "embeddings_2d":            [],
+                "cluster_labels":           [],
+                "mean_pairwise_similarity": 1.0,
+            }
+            sem_score = 0.5
+        timings["semantic_uncertainty"] = round(time.time()-t23, 2)
+        logger.info(f"  unc={sem_score:.3f} ({timings['semantic_uncertainty']}s)")
 
-    # Step 3: Cross-check
-    t = time.time()
-    logger.info("Step 3/3: Cross-check...")
-    try:
-        cc_detail = run_cross_check(prompt, cal_detail["response"])
-        cc_score  = cc_detail["cross_check_uncertainty"]
-    except Exception as e:
-        logger.error(f"Cross-check failed: {e}")
-        cc_detail = {
-            "local_response":          cal_detail.get("response",""),
-            "groq_response":           None,
-            "groq_available":          False,
-            "error":                   str(e),
-            "verdict":                 "unavailable",
-            "cross_check_uncertainty": 0.5,
-            "symmetric_agreement":     0.0,
-            "ab_detail": {}, "ba_detail": {},
-        }
-        cc_score = 0.5
-    timings["cross_check"] = round(time.time()-t, 2)
-    logger.info(f"  cc={cc_score:.3f} ({timings['cross_check']}s)")
+        # Step 3: Cross-check processing
+        logger.info("Step 3/3: Cross-check...")
+        try:
+            cc_detail = future_cc.result()
+            cc_score  = cc_detail["cross_check_uncertainty"]
+        except Exception as e:
+            logger.error(f"Cross-check failed: {e}")
+            cc_detail = {
+                "local_response":          cal_detail.get("response",""),
+                "groq_response":           None,
+                "groq_available":          False,
+                "error":                   str(e),
+                "verdict":                 "unavailable",
+                "cross_check_uncertainty": 0.5,
+                "symmetric_agreement":     0.0,
+                "ab_detail": {}, "ba_detail": {},
+            }
+            cc_score = 0.5
+        timings["cross_check"] = round(time.time()-t23, 2)
+        logger.info(f"  cc={cc_score:.3f} ({timings['cross_check']}s)")
 
     # Step 4: Aggregate
     result = aggregate_scores(

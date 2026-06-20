@@ -19,7 +19,7 @@ def test_metrics_endpoint():
     assert "api_active_requests" in response.text
 
 def test_metrics_increment_on_request(monkeypatch):
-    """Verify that calling the api/analyze endpoint increments request counters and records details."""
+    """Verify that calling the /analyze endpoint increments request counters and records details."""
     mock_result = {
         "prompt": "Test query",
         "result": {
@@ -42,17 +42,26 @@ def test_metrics_increment_on_request(monkeypatch):
     monkeypatch.setattr("backend.api.get_cached", lambda *args, **kwargs: None)
     monkeypatch.setattr("backend.api.set_cached", lambda *args, **kwargs: None)
 
-    # Call `/api/analyze`
-    response = client.post("/api/analyze", json={"query": "test query for metrics", "explain": False})
-    assert response.status_code == 200
+    # POST to /analyze — the async endpoint returns 202 with a job_id
+    response = client.post("/analyze", json={"prompt": "test query for metrics", "explain": False})
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    # Poll /result/{job_id} until the background task completes
+    import time
+    for _ in range(30):
+        result_resp = client.get(f"/result/{job_id}")
+        if result_resp.json().get("status") != "pending":
+            break
+        time.sleep(0.1)
 
     # Retrieve `/metrics` and assert it records the values
     metrics_response = client.get("/metrics")
     assert metrics_response.status_code == 200
     
-    # Verify requests counter incremented
-    assert 'api_requests_total{endpoint="/api/analyze",method="POST",status="200"}' in metrics_response.text
-    # Verify cache miss recorded
+    # Verify requests counter incremented (endpoint is /analyze, status 202)
+    assert 'api_requests_total{endpoint="/analyze",method="POST",status="202"}' in metrics_response.text
+    # Verify cache miss recorded by the background worker
     assert 'cache_hits_total{status="miss"}' in metrics_response.text
     # Verify risk label recorded
     assert 'risk_labels_total{label="low"}' in metrics_response.text
