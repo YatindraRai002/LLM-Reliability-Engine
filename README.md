@@ -15,23 +15,8 @@ A hallucination detection system for LLM outputs. It fuses three independent unc
 
 ---
 
-## Screenshots
-
-> Place your actual PNG files in `docs/screenshots/` with these exact filenames, or edit the paths below to match your files. A broken-image box just means the file isn't at the referenced path yet — these are normal local-relative markdown image links, nothing fancy.
-
-| Low risk result | High risk result |
-|---|---|
-| ![Low risk — confident, consistent answer](docs/screenshots/low_risk.png) | ![High risk — contradiction detected](docs/screenshots/high_risk.png) |
-
-| Signal breakdown | Semantic uncertainty landscape |
-|---|---|
-| ![Calibration, uncertainty, and cross-check scores](docs/screenshots/signal_breakdown.png) | ![PCA cluster plot of sampled responses](docs/screenshots/uncertainty_landscape.png) |
-
----
-
 ## Contents
 
-- [Screenshots](#screenshots)
 - [Architecture](#architecture)
 - [Benchmark results](#benchmark-results)
 - [Quick start](#quick-start)
@@ -47,56 +32,84 @@ A hallucination detection system for LLM outputs. It fuses three independent unc
 
 ## Architecture
 
+### System overview
+
+```mermaid
+graph TD
+    subgraph Frontends["Frontend layer"]
+        UI1["Streamlit App<br/>(app.py)<br/>direct Python import — PRIMARY"]
+        UI2["Next.js Web App<br/>(frontend/)<br/>polls /analyze → /result — EXPERIMENTAL"]
+    end
+
+    subgraph API["FastAPI backend (backend/api.py)"]
+        Router["Async router<br/>POST /analyze → 202 job_id<br/>GET /result/{id} → result"]
+        Health["GET /health · GET /metrics"]
+    end
+
+    subgraph Pipeline["Core detection pipeline (core/aggregator.py)"]
+        Cache["Response cache<br/>(core/cache.py)"]
+        S1["Stage 1 — Calibration<br/>token-level logits"]
+        S2["Stage 2 — Semantic uncertainty<br/>sample + cluster"]
+        S3["Stage 3 — Cross-check<br/>NLI vs Groq"]
+        S4["Stage 4 — Aggregator + Explainer<br/>weighted fusion, hard override"]
+    end
+
+    subgraph Models["Models & external APIs"]
+        Local["TinyLlama<br/>local GPU"]
+        Groq["Groq API<br/>llama-3.3-70b"]
+        NLI["DeBERTa-v3<br/>NLI cross-encoder"]
+    end
+
+    UI1 -->|Python import| Pipeline
+    UI2 -->|async HTTP| Router
+    Router --> Cache
+    Cache -->|cache miss| S1
+    S1 --> S2
+    S1 --> S3
+    S2 -.parallel.- S3
+    S2 --> S4
+    S3 --> S4
+    S1 -->|loads via model_loader| Local
+    S2 -->|embeds + samples| Groq
+    S3 -->|reference answer| Groq
+    S3 -->|entailment scoring| NLI
+    S4 --> Router
+    Router --> Health
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                            FRONTEND LAYER                                │
-│                                                                            │
-│   ┌────────────────────────┐        ┌──────────────────────────────┐    │
-│   │     Streamlit App       │        │       Next.js Web App        │    │
-│   │     (app.py)             │        │       (frontend/)            │    │
-│   │     direct Python import │        │       polls /analyze→/result │    │
-│   │     PRIMARY              │        │       EXPERIMENTAL           │    │
-│   └────────────┬─────────────┘        └───────────────┬───────────────┘    │
-└────────────────┼──────────────────────────────────────┼────────────────────┘
-                  │ Python import                        │ async HTTP
-                  │                                       ▼
-                  │                ┌──────────────────────────────────────┐
-                  │                │   FastAPI Backend (backend/api.py)   │
-                  │                │   POST /analyze    → 202 {job_id}    │
-                  │                │   GET  /result/{id} → result         │
-                  │                │   GET  /health  ·  GET  /metrics     │
-                  │                └──────────────────┬───────────────────┘
-                  │                                    │
-                  ▼                                    ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                       CORE DETECTION PIPELINE                            │
-│                                                                            │
-│   ┌──────────────┐                                                       │
-│   │   Stage 1     │                                                       │
-│   │   Calibration │───────────────┐                                       │
-│   │  (token logits)│               │                                      │
-│   └──────────────┘               │                                      │
-│                                    │     ┌────────────────┐                │
-│   ┌──────────────┐  parallel      │     │                │                │
-│   │   Stage 2     │◄───execution──┤     │   Stage 4       │                │
-│   │  Semantic     │                ├────▶│   Aggregator    │                │
-│   │  Uncertainty  │                │     │   + Explainer   │                │
-│   │  (sample+cluster)              │     │                │                │
-│   └──────────────┘                │     └────────────────┘                │
-│                                    │                                      │
-│   ┌──────────────┐                │                                      │
-│   │   Stage 3     │◄───────────────┘                                      │
-│   │  Cross-Check  │                                                       │
-│   │  (NLI vs Groq)│                                                       │
-│   └──────────────┘                                                       │
-└────────────────────────────────────────┬─────────────────────────────────┘
-                                          │
-                  ┌───────────────────────┼───────────────────────┐
-                  ▼                       ▼                       ▼
-           ┌─────────────┐        ┌─────────────┐         ┌─────────────┐
-           │  TinyLlama   │        │  Groq API    │         │  DeBERTa-v3  │
-           │  (local GPU) │        │  (remote)    │         │  (NLI)       │
-           └─────────────┘        └─────────────┘         └─────────────┘
+
+### Single-request data flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as FastAPI /analyze
+    participant Cache as Redis/SQLite cache
+    participant Cal as Stage 1: Calibration
+    participant Unc as Stage 2: Uncertainty
+    participant CC as Stage 3: Cross-check
+    participant Agg as Stage 4: Aggregator
+
+    U->>API: POST /analyze {prompt}
+    API->>Cache: lookup(prompt)
+    alt cache hit
+        Cache-->>API: cached result
+        API-->>U: 200 {result}
+    else cache miss
+        API-->>U: 202 {job_id}
+        API->>Cal: generate(prompt) on TinyLlama
+        Cal-->>API: response + token logits
+        par parallel execution
+            API->>Unc: sample 6x via Groq, cluster
+            Unc-->>API: uncertainty score
+        and
+            API->>CC: Groq reference + DeBERTa NLI
+            CC-->>API: cross-check score + verdict
+        end
+        API->>Agg: fuse(calibration, uncertainty, cross-check)
+        Agg-->>API: HallucinationResult
+        API->>Cache: store(prompt, result)
+        Note over U,API: client polls GET /result/{job_id}
+    end
 ```
 
 **Key design decisions**
@@ -107,6 +120,7 @@ A hallucination detection system for LLM outputs. It fuses three independent unc
 | **2-signal fallback mode** | If Groq is unreachable, the aggregator redistributes its weight to calibration + uncertainty rather than guessing or crashing — never produces a false high-risk score from an API outage |
 | **Hard NLI override** | If DeBERTa detects outright contradiction between the local and Groq response, the score is floored at 0.85 regardless of the weighted sum |
 | **Async API** | `/analyze` returns a `job_id` immediately; the frontend polls `/result/{job_id}` — avoids browser/proxy timeouts on long-running GPU inference |
+| **Cache-first** | Identical `(prompt, weights)` pairs return instantly on repeat queries instead of re-running the full pipeline |
 
 ---
 
