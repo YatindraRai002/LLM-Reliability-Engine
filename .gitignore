@@ -34,3 +34,6 @@ platt_calibrator.pkl
 # Node / Frontend
 node_modules/
 .next/
+
+# Temporary scratch space
+scratch/

@@ -9,12 +9,18 @@ Usage:
 """
 import json
 import logging
+import os
+import sys
 import numpy as np
 from datetime import datetime
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_score, recall_score
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 
 def generate_report(
@@ -62,14 +68,57 @@ def generate_report(
         prec = precision_score(labels, predicted, zero_division=0)
         rec = recall_score(labels, predicted, zero_division=0)
 
+        # Compute ECE
+        ece = 0.0
+        n_bins = 10
+        edges = np.linspace(0.0, 1.0, n_bins + 1)
+        scores_arr = np.array(scores)
+        labels_arr = np.array(labels, dtype=float)
+        for i in range(n_bins):
+            mask = (scores_arr >= edges[i]) & (scores_arr < edges[i + 1])
+            if mask.any():
+                ece += mask.mean() * abs(labels_arr[mask].mean() - scores_arr[mask].mean())
+
+        # Compute Baselines & Ablation if fields exist
+        baselines = {}
+        if results and all(k in results[0] for k in ["calibration", "uncertainty", "cross_check"]):
+            y_cal = [r["calibration"] for r in labeled]
+            y_unc = [r["uncertainty"] for r in labeled]
+            y_cc = [r["cross_check"] for r in labeled]
+            y_cal_unc = [(c + u) / 2.0 for c, u in zip(y_cal, y_unc)]
+            y_cal_cc = [(c + cc) / 2.0 for c, cc in zip(y_cal, y_cc)]
+
+            def get_auroc_ap_val(y_s):
+                try:
+                    return round(float(roc_auc_score(labels, y_s)), 4), round(float(average_precision_score(labels, y_s)), 4)
+                except Exception:
+                    return None, None
+
+            cal_auc, cal_ap = get_auroc_ap_val(y_cal)
+            unc_auc, unc_ap = get_auroc_ap_val(y_unc)
+            cc_auc, cc_ap = get_auroc_ap_val(y_cc)
+            cal_unc_auc, cal_unc_ap = get_auroc_ap_val(y_cal_unc)
+            cal_cc_auc, cal_cc_ap = get_auroc_ap_val(y_cal_cc)
+
+            baselines = {
+                "calibration_only": {"auroc": cal_auc, "ap": cal_ap},
+                "uncertainty_only": {"auroc": unc_auc, "ap": unc_ap},
+                "cross_check_only": {"auroc": cc_auc, "ap": cc_ap},
+                "cal_and_unc": {"auroc": cal_unc_auc, "ap": cal_unc_ap},
+                "cal_and_cc": {"auroc": cal_cc_auc, "ap": cal_cc_ap},
+            }
+
         report["overall_metrics"] = {
             "auroc": round(auroc, 4),
             "average_precision": round(ap, 4),
+            "ece": round(ece, 4),
             "precision_at_0.5": round(prec, 4),
             "recall_at_0.5": round(rec, 4),
             "hallucination_count": sum(labels),
             "correct_count": len(labels) - sum(labels),
         }
+        if baselines:
+            report["baselines"] = baselines
     else:
         report["overall_metrics"] = {
             "auroc": None,
@@ -96,7 +145,7 @@ def generate_report(
 
     categories = set(r.get("category", "unknown") for r in labeled)
     for cat in sorted(categories):
-        cat_results = [r for r in labeled if r.get("category") == cat]
+        cat_results = [r for r in labeled if r.get("category", "unknown") == cat]
         cat_scores = [r["hallucination_score"] for r in cat_results]
         cat_labels = [0 if r["correctness"] else 1 for r in cat_results]
 

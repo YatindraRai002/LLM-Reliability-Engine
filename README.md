@@ -13,6 +13,8 @@ A hallucination detection system for LLM outputs. It fuses three independent unc
 
 > LLMs state false things with the same fluent confidence as true things. This system measures *actual* uncertainty across three independent signals rather than relying on how the answer sounds.
 
+> **Research Hypothesis:** We hypothesize that hallucinations in LLM generations manifest simultaneously across three orthogonal dimensions: low token-level confidence (calibration), semantic inconsistency across multiple stochastic generations (semantic uncertainty), and factual disagreement with a stronger external reference model (cross-model verification). Fusing these complementary uncertainty sources via a learned meta-classifier should significantly improve hallucination detection compared to any single uncertainty signal.
+
 ---
 
 ## Contents
@@ -364,6 +366,17 @@ PYTHONPATH=. pytest -m "not requires_gpu and not requires_groq"
 
 ---
 
-## License
+## 🚫 Known Failure Modes
+
+Every hallucination detector has operational boundaries where accuracy degrades. The following failure modes have been identified:
+
+1. **Subjective or Creative Queries:** The system assumes a factual ground-truth exists. For creative writing, brainstorming, or open opinion questions, semantic uncertainty is naturally high (as diverse responses are valid) and cross-model agreement is low, leading to false positives (flagging valid responses as hallucinations).
+2. **Common Shared Misconceptions:** If both the local model and the cross-check model (Groq) share the same misconception (e.g., believing that humans only use 10% of their brains), cross-model agreement will be high and semantic uncertainty will be low. The system will fail to flag the hallucination (false negative).
+3. **Very Recent Events:** If the prompt involves real-time or very recent news that postdates the training cutoffs of both the local and Groq models, they may both hallucinate different facts or agree on wrong ones, causing unpredictable risk scores.
+4. **Mixed-Accuracy Long Responses:** When evaluating multi-sentence or paragraph-length responses, a single aggregated risk score can obscure the fact that the model was 90% correct but hallucinated one crucial detail. In these cases, token and sentence-level explanations are critical.
+
+---
+
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).

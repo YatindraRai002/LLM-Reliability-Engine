@@ -62,26 +62,41 @@ def aggregate_scores(
     verdict        = cross_check_result.get("verdict", "neutral")
     cc             = float(np.clip(cc_raw, 0.0, 1.0))
     
-    w = dict(weights or CONFIG["detection"]["weights"])
-    w1 = w.get("calibration",          0.20)
-    w2 = w.get("semantic_uncertainty",  0.50)
-    w3 = w.get("cross_check",           0.30)
-    
     mode = "full"
-    
     if not groq_available:
-        w1 = w1 + w3 * 0.40
-        w2 = w2 + w3 * 0.60
-        w3 = 0.0
-        cc = 0.5
         mode = "2-signal"
         logger.info("Aggregator: running in 2-signal mode (Groq unavailable)")
     
-    total = w1 + w2 + w3
-    if total > 0:
-        w1, w2, w3 = w1/total, w2/total, w3/total
+    from core.meta_classifier import get_meta_classifier
+    clf = get_meta_classifier()
     
-    score = w1 * cal + w2 * unc + w3 * cc
+    score = clf.predict_proba(cal, unc, cc, mode=mode)
+    
+    # Extract weights for backwards compatibility and attribution display
+    if clf.is_fitted:
+        if mode == "full":
+            coefs = np.abs(clf.coef_full)
+            tot = np.sum(coefs) or 1.0
+            w1, w2, w3 = coefs[0]/tot, coefs[1]/tot, coefs[2]/tot
+        else:
+            coefs = np.abs(clf.coef_2signal)
+            tot = np.sum(coefs) or 1.0
+            w1, w2 = coefs[0]/tot, coefs[1]/tot
+            w3 = 0.0
+    else:
+        w = dict(weights or CONFIG["detection"]["weights"])
+        w1 = w.get("calibration",          0.20)
+        w2 = w.get("semantic_uncertainty",  0.50)
+        w3 = w.get("cross_check",           0.30)
+        
+        if not groq_available:
+            w1 = w1 + w3 * 0.40
+            w2 = w2 + w3 * 0.60
+            w3 = 0.0
+            
+        total = w1 + w2 + w3
+        if total > 0:
+            w1, w2, w3 = w1/total, w2/total, w3/total
     
     if groq_available and verdict == "contradict":
         pre_override = score

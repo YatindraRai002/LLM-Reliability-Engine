@@ -1,32 +1,27 @@
-
 models:
   local:
-    name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    name: TinyLlama/TinyLlama-1.1B-Chat-v1.0
     use_4bit: true
-    torch_dtype: "float16"
+    torch_dtype: float16
   groq:
-    name: "llama-3.3-70b-versatile"
+    name: llama-3.3-70b-versatile
   nli:
-    name: "cross-encoder/nli-deberta-v3-base"
+    name: cross-encoder/nli-deberta-v3-base
   embedding:
-    name: "sentence-transformers/all-MiniLM-L6-v2"
-
+    name: sentence-transformers/all-MiniLM-L6-v2
 detection:
   weights:
-    calibration: 0.20
-    semantic_uncertainty: 0.50
-    cross_check: 0.30
+    calibration: 0.05
+    semantic_uncertainty: 0.05
+    cross_check: 0.9
   thresholds:
     low: 0.42
     medium: 0.68
-
 sampling:
   n_samples: 6
   temperature: 0.8
   request_stagger_ms: 300
   max_concurrent_requests: 3
-
-
 credentials:
   usernames:
     admin:
@@ -40,7 +35,6 @@ cookie:
 preauthorized:
   emails:
   - admin@example.com
-
 explanation:
   enabled: true
   token_attribution:
@@ -49,10 +43,10 @@ explanation:
     mild_threshold: 0.75
   sentence_nli:
     enabled: true
-    contradiction_label: "CONTRADICTION"
-    contradiction_threshold: 0.50
+    contradiction_label: CONTRADICTION
+    contradiction_threshold: 0.5
   signal_shap:
     enabled: true
   recommendations:
-    calibration_dominant_threshold: 0.40
-    semantic_dominant_threshold: 0.50
+    calibration_dominant_threshold: 0.4
+    semantic_dominant_threshold: 0.5

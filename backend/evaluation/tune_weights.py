@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 
 import numpy as np
 import yaml
@@ -10,6 +11,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 CONFIG_PATH = os.path.join(_ROOT, "config.yaml")
 
 
@@ -126,14 +129,36 @@ def write_weights_to_config(best: dict):
     if "weights" not in config[weight_key]:
         config[weight_key]["weights"] = {}
 
-    config[weight_key]["weights"]["calibration"] = best["w1"]
-    config[weight_key]["weights"]["semantic_uncertainty"]  = best["w2"]
-    config[weight_key]["weights"]["cross_check"]  = best["w3"]
+    config[weight_key]["weights"]["calibration"] = float(best["w1"])
+    config[weight_key]["weights"]["semantic_uncertainty"]  = float(best["w2"])
+    config[weight_key]["weights"]["cross_check"]  = float(best["w3"])
 
     with open(CONFIG_PATH, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
     logger.info(f"Written to config.yaml: cal={best['w1']} unc={best['w2']} cc={best['w3']}")
+
+
+def fit_meta_classifier(results: list, output_path: str = None) -> dict:
+    """Fit a Logistic Regression meta-classifier on evaluation results."""
+    from core.meta_classifier import MetaClassifier
+    
+    labeled = [r for r in results if r.get("correctness") is not None]
+    if len(labeled) < 5:
+        logger.error("Not enough labeled examples to train meta-classifier. Need at least 5.")
+        return None
+        
+    cal_scores = [r.get("calibration", r.get("calibration_score", 0.5)) for r in labeled]
+    unc_scores = [r.get("uncertainty", r.get("uncertainty_score", 0.5)) for r in labeled]
+    cc_scores = [r.get("cross_check", r.get("cross_check_score", 0.5)) for r in labeled]
+    # Label is 1 for hallucinated (correctness=False), 0 for correct (correctness=True)
+    labels = [0 if r["correctness"] else 1 for r in labeled]
+    
+    clf = MetaClassifier()
+    fit_stats = clf.fit(cal_scores, unc_scores, cc_scores, labels)
+    if fit_stats.get("success", False):
+        clf.save(output_path)
+    return fit_stats
 
 
 def run(input_file: str, method: str = "grid", write_back: bool = True):
@@ -183,9 +208,22 @@ def run(input_file: str, method: str = "grid", write_back: bool = True):
     if write_back:
         write_weights_to_config(best)
         print(f"  Weights written to config.yaml")
+        
+        # Fit and save MetaClassifier
+        fit_stats = fit_meta_classifier(results)
+        if fit_stats and fit_stats.get("success", False):
+            print(f"{'='*50}")
+            print(f"  Meta-Classifier (Logistic Regression) Training")
+            print(f"{'='*50}")
+            print(f"  Train Accuracy (3-signal): {fit_stats['train_accuracy_full']:.4f}")
+            print(f"  Train Accuracy (2-signal): {fit_stats['train_accuracy_2signal']:.4f}")
+            print(f"  3-Signal Coefficients   : cal={fit_stats['coef_full'][0]:.4f}, unc={fit_stats['coef_full'][1]:.4f}, cc={fit_stats['coef_full'][2]:.4f}")
+            print(f"  3-Signal Intercept      : {fit_stats['intercept_full']:.4f}")
+            print(f"  Meta-Classifier model saved successfully.")
+            print(f"{'='*50}\n")
         print(f"  Restart Streamlit for changes to take effect.\n")
     else:
-        print(f"  --no-write-back set — config.yaml not modified.\n")
+        print(f"  --no-write-back set — config.yaml and MetaClassifier not modified.\n")
 
     return best
 

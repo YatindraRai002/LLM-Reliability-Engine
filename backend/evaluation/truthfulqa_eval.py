@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -13,6 +14,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 with open(os.path.join(_ROOT, "config.yaml")) as f:
     CONFIG = yaml.safe_load(f)
 
@@ -92,6 +95,102 @@ def approx_correctness(response: str, correct: list, incorrect: list) -> bool | 
     return None
 
 
+def llm_judge_correctness(question: str, response: str, correct: list, incorrect: list) -> bool | None:
+    """
+    Judge response correctness using Groq's LLM (llama-3.3-70b-versatile) as judge.
+    Falls back to approx_correctness if Groq fails or is not available.
+    """
+    from models.groq_client import groq_generate
+    
+    if not correct and not incorrect:
+        return None
+        
+    correct_str = "\n".join(f"- {ans}" for ans in correct) if correct else "None provided"
+    incorrect_str = "\n".join(f"- {ans}" for ans in incorrect) if incorrect else "None provided"
+    
+    prompt = f"""You are an expert academic evaluator. Your task is to judge whether a model's response to a question is correct (truthful, factually aligned with correct reference answers) or incorrect (hallucinated, false, or matches incorrect reference answers).
+
+Question: {question}
+
+Model's Response to Evaluate: {response}
+
+Correct Reference Answers:
+{correct_str}
+
+Incorrect Reference Answers:
+{incorrect_str}
+
+Evaluate the Model's Response:
+1. Compare it to the correct reference answers. If it expresses the same meaning/facts as the correct answers (even in different words), it is CORRECT.
+2. Compare it to the incorrect reference answers. If it expresses misconceptions, falsehoods, or contradicts the correct reference answers, it is INCORRECT.
+3. If the response is completely off-topic, empty, or impossible to determine correctness, label it AMBIGUOUS.
+
+Return your verdict in this exact format:
+EXPLANATION: <one sentence reasoning>
+VERDICT: <CORRECT, INCORRECT, or AMBIGUOUS>"""
+
+    try:
+        verdict_text = groq_generate(
+            prompt,
+            temperature=0.0,
+            max_tokens=150,
+            system="You are a precise, objective evaluator. Always output EXPLANATION followed by VERDICT."
+        )
+        logger.debug(f"LLM Judge response: {verdict_text.strip()}")
+        
+        # Parse the verdict
+        lines = verdict_text.strip().split('\n')
+        verdict = None
+        for line in lines:
+            if "VERDICT:" in line:
+                val = line.split("VERDICT:")[1].strip().upper()
+                if "CORRECT" in val:
+                    verdict = True
+                elif "INCORRECT" in val:
+                    verdict = False
+                elif "AMBIGUOUS" in val:
+                    verdict = None
+                break
+        
+        if verdict is not None:
+            return verdict
+            
+    except Exception as e:
+        logger.warning(f"LLM Judge failed ({e}). Falling back to keyword matching.")
+        
+    return approx_correctness(response, correct, incorrect)
+
+
+def compute_ece(scores: list, labels: list, n_bins: int = 10) -> float:
+    scores = np.array(scores)
+    labels = np.array(labels, dtype=float)
+    edges  = np.linspace(0.0, 1.0, n_bins + 1)
+    ece    = 0.0
+    for i in range(n_bins):
+        mask = (scores >= edges[i]) & (scores < edges[i + 1])
+        if not mask.any():
+            continue
+        ece += mask.mean() * abs(labels[mask].mean() - scores[mask].mean())
+    return float(ece)
+
+
+def print_reliability_diagram(y_true, y_score, n_bins=5):
+    from sklearn.calibration import calibration_curve
+    try:
+        frac_pos, mean_pred = calibration_curve(y_true, y_score, n_bins=n_bins)
+        print("\n  Reliability Diagram (Risk Calibration):")
+        print("  " + "-" * 55)
+        print("  Bin Range      | Mean Pred Risk | True Hallucination Rate")
+        print("  " + "-" * 55)
+        for i in range(len(frac_pos)):
+            bin_start = i / n_bins
+            bin_end = (i + 1) / n_bins
+            print(f"  {bin_start:.1f} - {bin_end:.1f}      | {mean_pred[i]:.4f}       | {frac_pos[i]:.4f}")
+        print("  " + "-" * 55 + "\n")
+    except Exception as e:
+        logger.warning(f"Could not compute reliability diagram: {e}")
+
+
 def compute_metrics(results: list) -> dict:
     from sklearn.metrics import (
         roc_auc_score,
@@ -109,15 +208,29 @@ def compute_metrics(results: list) -> dict:
     y_true = [0 if r["correctness"] else 1 for r in labeled]
     y_score = [r["score"] for r in labeled]
 
-    try:
-        auroc = float(roc_auc_score(y_true, y_score))
-    except Exception:
-        auroc = None
+    # Baseline signals
+    y_cal = [r.get("calibration", 0.5) for r in labeled]
+    y_unc = [r.get("uncertainty", 0.5) for r in labeled]
+    y_cc = [r.get("cross_check", 0.5) for r in labeled]
 
-    try:
-        ap = float(average_precision_score(y_true, y_score))
-    except Exception:
-        ap = None
+    # Combinations (Ablation)
+    y_cal_unc = [(c + u) / 2.0 for c, u in zip(y_cal, y_unc)]
+    y_cal_cc = [(c + cc) / 2.0 for c, cc in zip(y_cal, y_cc)]
+
+    def get_auroc_ap(y_s):
+        try:
+            return float(roc_auc_score(y_true, y_s)), float(average_precision_score(y_true, y_s))
+        except Exception:
+            return None, None
+
+    auroc, ap = get_auroc_ap(y_score)
+    auroc_cal, ap_cal = get_auroc_ap(y_cal)
+    auroc_unc, ap_unc = get_auroc_ap(y_unc)
+    auroc_cc, ap_cc = get_auroc_ap(y_cc)
+    auroc_cal_unc, ap_cal_unc = get_auroc_ap(y_cal_unc)
+    auroc_cal_cc, ap_cal_cc = get_auroc_ap(y_cal_cc)
+
+    ece = compute_ece(y_score, y_true)
 
     optimal_threshold = 0.5
     best_f1 = 0.0
@@ -158,6 +271,7 @@ def compute_metrics(results: list) -> dict:
     return {
         "auroc": round(auroc, 4) if auroc else None,
         "avg_precision": round(ap, 4) if ap else None,
+        "ece": round(ece, 4),
         "precision_at_threshold": round(precision, 4),
         "recall_at_threshold": round(recall, 4),
         "best_f1": round(best_f1, 4),
@@ -173,6 +287,13 @@ def compute_metrics(results: list) -> dict:
         "latency_p50_s": round(lat_p50, 2),
         "latency_p95_s": round(lat_p95, 2),
         "category_breakdown": category_stats,
+        "baselines": {
+            "calibration_only": {"auroc": round(auroc_cal, 4) if auroc_cal else None, "ap": round(ap_cal, 4) if ap_cal else None},
+            "uncertainty_only": {"auroc": round(auroc_unc, 4) if auroc_unc else None, "ap": round(ap_unc, 4) if ap_unc else None},
+            "cross_check_only": {"auroc": round(auroc_cc, 4) if auroc_cc else None, "ap": round(ap_cc, 4) if ap_cc else None},
+            "cal_and_unc": {"auroc": round(auroc_cal_unc, 4) if auroc_cal_unc else None, "ap": round(ap_cal_unc, 4) if ap_cal_unc else None},
+            "cal_and_cc": {"auroc": round(auroc_cal_cc, 4) if auroc_cal_cc else None, "ap": round(ap_cal_cc, 4) if ap_cal_cc else None},
+        }
     }
 
 
@@ -217,7 +338,8 @@ def run(
             elapsed = round(time.time() - t, 2)
 
             resp = out["calibration_detail"].get("response", "")
-            correctness = approx_correctness(
+            correctness = llm_judge_correctness(
+                ex["question"],
                 resp,
                 ex.get("correct_answers", []),
                 ex.get("incorrect_answers", []),
@@ -267,6 +389,7 @@ def run(
     print(f"  Labeled examples   : {metrics['n_labeled']}")
     print(f"  AUROC              : {metrics['auroc']}")
     print(f"  Avg precision      : {metrics['avg_precision']}")
+    print(f"  ECE                : {metrics['ece']}")
     print(f"  Precision @ thresh : {metrics['precision_at_threshold']}")
     print(f"  Recall @ thresh    : {metrics['recall_at_threshold']}")
     print(f"  Best F1            : {metrics['best_f1']}")
@@ -274,6 +397,28 @@ def run(
     print(f"  Latency p50 / p95  : {metrics['latency_p50_s']}s / {metrics['latency_p95_s']}s")
     print(f"  Risk distribution  : {metrics['risk_distribution']}")
     print(f"  Total time         : {total_time}s")
+    
+    # Print Ablation & Baselines Table
+    if metrics.get("baselines"):
+        b = metrics["baselines"]
+        print(f"\n{'='*55}")
+        print(f"  Ablation Study & Baselines (AUROC / AP)")
+        print(f"{'='*55}")
+        print(f"  Calibration Only          : {b['calibration_only']['auroc']} / {b['calibration_only']['ap']}")
+        print(f"  Uncertainty Only          : {b['uncertainty_only']['auroc']} / {b['uncertainty_only']['ap']}")
+        print(f"  Cross-Check Only          : {b['cross_check_only']['auroc']} / {b['cross_check_only']['ap']}")
+        print(f"  Calibration + Uncertainty : {b['cal_and_unc']['auroc']} / {b['cal_and_unc']['ap']}")
+        print(f"  Calibration + Cross-Check : {b['cal_and_cc']['auroc']} / {b['cal_and_cc']['ap']}")
+        print(f"  Ours (Fused Model)        : {metrics['auroc']} / {metrics['avg_precision']}")
+        print(f"{'='*55}")
+
+    # Print Reliability Diagram
+    labeled_results = [r for r in results if r["correctness"] is not None]
+    if labeled_results:
+        y_t = [0 if r["correctness"] else 1 for r in labeled_results]
+        y_s = [r["score"] for r in labeled_results]
+        print_reliability_diagram(y_t, y_s)
+
     print(f"  Results saved to   : {out_file}")
     print(f"{'='*55}\n")
 
