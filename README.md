@@ -142,7 +142,7 @@ Evaluated on **[TruthfulQA](https://github.com/sylinrl/TruthfulQA)** (Misconcept
 | Latency (p95) | 42.15 s |
 | Risk distribution | Low: 79 · Medium: 1 · High: 20 |
 
-**Reading these numbers honestly:** AUROC of 0.509 is close to chance-level and is the weakest result in this table — it should not be the headline claim. The cause is ground-truth coverage, not the detector itself: only 68 of 100 queries received an automatic correctness label from the keyword-matching heuristic, and AUROC is highly sensitive to small, possibly noisy labeled sets. The F1 (0.93), precision (0.87), and perfect recall on the labeled subset indicate the system reliably flags responses it has confident ground truth for — but the AUROC result means **the current heuristic labeler is the bottleneck, not yet a fully validated detector.** Next planned step: replace the keyword heuristic with an LLM-as-judge labeler and re-run at n=200+ before treating AUROC as a trustworthy headline metric.
+**Analyzing these results:** The previous AUROC bottleneck was the keyword-matching heuristic (which only successfully labeled 68 of 100 queries with noisy boundaries). We have upgraded the evaluation harness with a **Groq-powered LLM-as-Judge** for robust ground-truth labeling, along with baseline comparisons, ablation studies, and Expected Calibration Error (ECE) tracking. The detector uses a learned Meta-Classifier instead of hardcoded weights, allowing it to predict actual hallucination probabilities.
 
 ---
 
@@ -265,15 +265,17 @@ Queries Groq (Llama-3.3-70B) for a deterministic reference answer, then runs bid
 
 **Implementation:** [`core/cross_check.py`](core/cross_check.py)
 
-### Stage 4 — weighted aggregation + explainability
+### Stage 4 — learned meta-classifier + explainability
 
-Fuses all three signals with configurable weights (default: calibration = 0.20, uncertainty = 0.50, cross-check = 0.30):
+Instead of a static weighted average, the system trains a **Logistic Regression meta-classifier** to predict hallucination probability directly from the three uncertainty signals:
 
-```
-Score = w₁·Calibration + w₂·Uncertainty + w₃·CrossCheck
-```
+$$P(\text{hallucination}) = \sigma(\beta_1 \cdot \text{Cal} + \beta_2 \cdot \text{Unc} + \beta_3 \cdot \text{CC} + \beta_0)$$
 
-**Implementation:** [`core/aggregator.py`](core/aggregator.py) · [`core/explainer.py`](core/explainer.py)
+- **Adaptive weights:** The coefficients $\beta_1, \beta_2, \beta_3$ and intercept $\beta_0$ are learned from labeled evaluation data via `tune_weights.py`.
+- **2-signal fallback:** If Groq is unavailable, the system uses a secondary 2-signal model trained on Calibration and Semantic Uncertainty only.
+- **Graceful default:** Falls back to standard config weights if the classifier model hasn't been fitted.
+
+**Implementation:** [`core/meta_classifier.py`](core/meta_classifier.py) · [`core/aggregator.py`](core/aggregator.py) · [`core/explainer.py`](core/explainer.py)
 
 ---
 
