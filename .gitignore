@@ -14,17 +14,23 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Eval artifacts
-eval_results.json
+eval_results*.json
 
 # Test / cache
 .pytest_cache/
 .cache/
+.streamlit/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 
-# Storage / Cache
+# Storage / Cache / Config
 results.db
-calibrator.pkl
+platt_calibrator.json
+platt_calibrator.pkl
+
+# Node / Frontend
+node_modules/
+.next/
