@@ -1,4 +1,4 @@
-# 🔍 LLM Lie Detector
+# 🔍 LLM Reliability Engine
 
 [![CI](https://github.com/YatindraRai002/LLM-LIE-DETECTOR/actions/workflows/ci.yml/badge.svg)](https://github.com/YatindraRai002/LLM-LIE-DETECTOR/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
