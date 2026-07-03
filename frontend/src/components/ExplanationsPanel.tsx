@@ -13,10 +13,18 @@ import {
 
 interface Props {
   data?: {
-    flagged_spans: { text: string; confidence: number; severity: string }[];
+    // Matches core/explainer.py FlaggedSpan dataclass
+    flagged_spans: {
+      token: string;
+      position: number;
+      probability: number;
+      reason: string;
+    }[];
+    // Matches core/explainer.py ContradictingSentence dataclass
     contradicting_sentences: {
-      sentence: string;
-      contradiction_score: number;
+      text: string;
+      nli_score: number;
+      label: string;
       entailment_score: number;
     }[];
     signal_pct: Record<string, number>;
@@ -175,9 +183,9 @@ export default function ExplanationsPanel({ data }: Props) {
           data.contradicting_sentences.map((cs, i) => (
             <div key={i} className="contradiction-card">
               <div className="score">
-                Contradiction Score: {cs.contradiction_score.toFixed(3)}
+                Contradiction Score: {cs.nli_score.toFixed(3)}
               </div>
-              <div className="text">{cs.sentence}</div>
+              <div className="text">{cs.text}</div>
             </div>
           ))
         ) : (

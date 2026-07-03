@@ -47,10 +47,18 @@ export interface AnalyzeResult {
     ba_detail: Record<string, number>;
   };
   explanation_detail?: {
-    flagged_spans: { text: string; confidence: number; severity: string }[];
+    // Field names match core/explainer.py FlaggedSpan dataclass exactly
+    flagged_spans: {
+      token: string;
+      position: number;
+      probability: number;
+      reason: string;
+    }[];
+    // Field names match core/explainer.py ContradictingSentence dataclass exactly
     contradicting_sentences: {
-      sentence: string;
-      contradiction_score: number;
+      text: string;
+      nli_score: number;
+      label: string;
       entailment_score: number;
     }[];
     signal_pct: Record<string, number>;
